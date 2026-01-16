@@ -10,7 +10,7 @@ pub use utils::*;
 #[actix_rt::test]
 async fn function_source_tilejson() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
-    let src = source(&mock, "function_zxy_query");
+    let src = source(&mock, "function_zxy_query").await;
     assert_yaml_snapshot!(src.get_tilejson(), @r"
     tilejson: 3.0.0
     tiles: []
@@ -23,14 +23,14 @@ async fn function_source_tilejson() {
 #[actix_rt::test]
 async fn function_source_tile() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
-    let src = source(&mock, "function_zxy_query");
+    let src = source(&mock, "function_zxy_query").await;
     let tile = src
         .get_tile(TileCoord { z: 0, x: 0, y: 0 }, None)
         .await
         .unwrap();
     assert!(!tile.is_empty());
 
-    let src = source(&mock, "function_zxy_query_jsonb");
+    let src = source(&mock, "function_zxy_query_jsonb").await;
     let tile = src
         .get_tile(TileCoord { z: 0, x: 0, y: 0 }, None)
         .await
@@ -48,6 +48,7 @@ async fn function_source_schemas() {
             from_schemas: MixedCase
     "});
     let sources = mock_sources(cfg).await.0.tiles;
+    let sources = sources.read().await;
     assert_yaml_snapshot!(sources.get_catalog(), @r"
     function_Mixed_Name:
       content_type: application/x-protobuf

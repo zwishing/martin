@@ -13,12 +13,12 @@ pub use utils::*;
 macro_rules! create_app {
     ($sources:expr) => {{
         let state = mock_sources(mock_cfg($sources)).await.0;
+        let state = std::sync::Arc::new(state);
         ::actix_web::test::init_service(
             ::actix_web::App::new()
-                .app_data(actix_web::web::Data::new(
-                    ::martin::srv::Catalog::new(&state).unwrap(),
-                ))
-                .app_data(actix_web::web::Data::new(state.styles))
+                .app_data(actix_web::web::Data::from(state.clone()))
+                .app_data(actix_web::web::Data::new(state.config_status.clone()))
+                .app_data(actix_web::web::Data::new(state.styles.clone()))
                 .app_data(actix_web::web::Data::new(SrvConfig::default()))
                 .configure(|c| ::martin::srv::router(c, &SrvConfig::default())),
         )

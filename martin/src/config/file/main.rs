@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use clap::ValueEnum;
 #[cfg(feature = "_tiles")]
@@ -18,6 +18,7 @@ use martin_core::tiles::OptTileCache;
 use martin_core::tiles::pmtiles::PmtCache;
 use serde::{Deserialize, Serialize};
 use subst::VariableMap;
+use tokio::sync::RwLock;
 
 #[cfg(any(
     feature = "pmtiles",
@@ -34,8 +35,12 @@ use crate::config::file::{
     ConfigFileError, ConfigFileResult, ConfigurationLivecycleHooks, UnrecognizedKeys,
     UnrecognizedValues, copy_unrecognized_keys_from_config,
 };
-#[cfg(feature = "_tiles")]
-use crate::source::TileSources;
+use crate::config::database::{ConfigSource, ConfigStatus, ConfigStatusHandle};
+#[cfg(feature = "postgres")]
+use crate::config::database::{ConfigReloadHandle, create_config_pool, load_config_from_database};
+#[cfg(feature = "postgres")]
+use crate::config::file::postgres::POOL_SIZE_DEFAULT;
+use crate::source::{SharedTileSources, TileSources};
 #[cfg(feature = "_tiles")]
 use crate::srv::RESERVED_KEYWORDS;
 use crate::{MartinError, MartinResult};
@@ -52,7 +57,7 @@ pub enum TileSourceWarning {
 
 pub struct ServerState {
     #[cfg(feature = "_tiles")]
-    pub tiles: TileSources,
+    pub tiles: SharedTileSources,
     #[cfg(feature = "_tiles")]
     pub tile_cache: OptTileCache,
 
@@ -68,7 +73,15 @@ pub struct ServerState {
 
     #[cfg(feature = "styles")]
     pub styles: martin_core::styles::StyleSources,
+
+    pub config_status: ConfigStatusHandle,
+    pub admin_reload_enabled: bool,
+    #[cfg(feature = "postgres")]
+    pub config_reload: Option<ConfigReloadHandle>,
 }
+
+const CONFIG_REFRESH_INTERVAL_MIN_SECONDS: u64 = 10;
+const CONFIG_DATABASE_POOL_SIZE_DEFAULT: usize = 5;
 
 #[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -88,6 +101,22 @@ pub struct Config {
 
     #[serde(flatten)]
     pub srv: super::srv::SrvConfig,
+
+    /// Configuration source mode (file or database)
+    #[serde(default, skip_serializing_if = "ConfigSource::is_file")]
+    pub config_source: ConfigSource,
+
+    /// Refresh interval for database configuration polling (seconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_refresh_interval_seconds: Option<u64>,
+
+    /// Enable the /admin/config/reload endpoint (database mode only)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub admin_reload_enabled: bool,
+
+    /// Optional connection string for configuration database
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_database: Option<String>,
 
     #[cfg(feature = "postgres")]
     #[serde(default, skip_serializing_if = "OptOneMany::is_none")]
@@ -129,6 +158,14 @@ impl Config {
 
         if let Some(path) = &self.srv.base_path {
             self.srv.base_path = Some(parse_base_path(path)?);
+        }
+
+        if self.config_source.is_database() {
+            if let Some(interval) = self.config_refresh_interval_seconds {
+                if interval < CONFIG_REFRESH_INTERVAL_MIN_SECONDS {
+                    return Err(ConfigFileError::InvalidConfigRefreshInterval(interval).into());
+                }
+            }
         }
         #[cfg(feature = "postgres")]
         {
@@ -214,7 +251,9 @@ impl Config {
         #[cfg(feature = "fonts")]
         let is_empty = is_empty && self.fonts.is_empty();
 
-        if is_empty {
+        if self.config_source.is_database() {
+            Ok(res)
+        } else if is_empty {
             Err(ConfigFileError::NoSources.into())
         } else {
             Ok(res)
@@ -223,6 +262,9 @@ impl Config {
 
     pub async fn resolve(&mut self) -> MartinResult<ServerState> {
         init_aws_lc_tls();
+
+        let config_status: ConfigStatusHandle =
+            Arc::new(RwLock::new(ConfigStatus::new(self.config_source)));
 
         #[cfg(feature = "_tiles")]
         let resolver = IdResolver::new(RESERVED_KEYWORDS);
@@ -234,18 +276,73 @@ impl Config {
         let pmtiles_cache = cache_config.create_pmtiles_cache();
 
         #[cfg(feature = "_tiles")]
-        let (tiles, warnings) = self
-            .resolve_tile_sources(
-                &resolver,
-                #[cfg(feature = "pmtiles")]
-                pmtiles_cache,
-            )
-            .await?;
-
-        #[cfg(feature = "_tiles")]
-        self.on_invalid
-            .unwrap_or_default()
-            .handle_tile_warnings(&warnings)?;
+        let (tiles, _warnings, config_reload) = if self.config_source.is_database() {
+            #[cfg(not(feature = "postgres"))]
+            {
+                return Err(MartinError::ConfigError(
+                    "database configuration requires the postgres feature".to_string(),
+                ));
+            }
+            #[cfg(feature = "postgres")]
+            {
+                info!("Using database-driven configuration for tile sources.");
+                self.warn_ignored_yaml_sources();
+                let (connection_string, ssl_certs, pool_size) =
+                    self.config_database_settings()?;
+                let pool = create_config_pool(
+                    &connection_string,
+                    ssl_certs.and_then(|c| c.ssl_cert.as_ref()),
+                    ssl_certs.and_then(|c| c.ssl_key.as_ref()),
+                    ssl_certs.and_then(|c| c.ssl_root_cert.as_ref()),
+                    pool_size,
+                )
+                .await?;
+                let loaded = load_config_from_database(
+                    self,
+                    &pool,
+                    &resolver,
+                    #[cfg(feature = "pmtiles")]
+                    Some(pmtiles_cache.clone()),
+                )
+                .await?;
+                let crate::config::database::LoadedConfig {
+                    metadata,
+                    sources,
+                    warnings,
+                } = loaded;
+                OnInvalid::Warn.handle_tile_warnings(&warnings)?;
+                {
+                    let mut status = config_status.write().await;
+                    status.config_version = Some(metadata.version);
+                    status.last_config_reload = Some(std::time::SystemTime::now());
+                }
+                let shared_tiles = Arc::new(RwLock::new(sources));
+                let reload_handle = ConfigReloadHandle::new(
+                    self.clone(),
+                    pool,
+                    shared_tiles.clone(),
+                    config_status.clone(),
+                    Some(metadata.version),
+                    #[cfg(feature = "pmtiles")]
+                    Some(pmtiles_cache.clone()),
+                );
+                (shared_tiles, warnings, Some(reload_handle))
+            }
+        } else {
+            info!("Using file-based configuration for tile sources.");
+            let (tiles, warnings) = self
+                .resolve_tile_sources(
+                    &resolver,
+                    #[cfg(feature = "pmtiles")]
+                    pmtiles_cache,
+                )
+                .await?;
+            self.on_invalid
+                .unwrap_or_default()
+                .handle_tile_warnings(&warnings)?;
+            let shared_tiles = Arc::new(RwLock::new(tiles));
+            (shared_tiles, warnings, None)
+        };
 
         Ok(ServerState {
             #[cfg(feature = "_tiles")]
@@ -265,6 +362,11 @@ impl Config {
 
             #[cfg(feature = "styles")]
             styles: self.styles.resolve()?,
+
+            config_status,
+            admin_reload_enabled: self.admin_reload_enabled,
+            #[cfg(feature = "postgres")]
+            config_reload,
         })
     }
 
@@ -375,6 +477,64 @@ impl Config {
         ))
     }
 
+    fn warn_ignored_yaml_sources(&self) {
+        let mut ignored = false;
+
+        #[cfg(feature = "postgres")]
+        {
+            for pg in self.postgres.iter() {
+                if pg.tables.is_some() || pg.functions.is_some() {
+                    ignored = true;
+                    break;
+                }
+            }
+        }
+
+        #[cfg(feature = "pmtiles")]
+        if !self.pmtiles.is_empty() {
+            ignored = true;
+        }
+
+        #[cfg(feature = "mbtiles")]
+        if !self.mbtiles.is_empty() {
+            ignored = true;
+        }
+
+        #[cfg(feature = "unstable-cog")]
+        if !self.cog.is_empty() {
+            ignored = true;
+        }
+
+        if ignored {
+            warn!("Tile source definitions in YAML are ignored in database mode");
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    pub(crate) fn config_database_settings(
+        &self,
+    ) -> MartinResult<(String, Option<&super::postgres::PostgresSslCerts>, usize)> {
+        if let Some(conn) = &self.config_database {
+            let ssl = self.postgres.iter().next().map(|pg| &pg.ssl_certificates);
+            let pool_size = self
+                .postgres
+                .iter()
+                .next()
+                .and_then(|pg| pg.pool_size)
+                .unwrap_or(CONFIG_DATABASE_POOL_SIZE_DEFAULT);
+            return Ok((conn.clone(), ssl, pool_size));
+        }
+
+        let Some(pg) = self.postgres.iter().next() else {
+            return Err(ConfigFileError::PostgresConnectionStringMissing.into());
+        };
+        let Some(conn) = pg.connection_string.clone() else {
+            return Err(ConfigFileError::PostgresConnectionStringMissing.into());
+        };
+        let pool_size = pg.pool_size.unwrap_or(POOL_SIZE_DEFAULT);
+        Ok((conn, Some(&pg.ssl_certificates), pool_size))
+    }
+
     pub fn save_to_file(&self, file_name: &Path) -> ConfigFileResult<()> {
         let yaml = serde_yaml::to_string(&self).expect("Unable to serialize config");
         if file_name.as_os_str() == OsStr::new("-") {
@@ -471,6 +631,10 @@ pub fn parse_base_path(path: &str) -> MartinResult<String> {
         return Ok(uri.path().trim_end_matches('/').to_string());
     }
     Err(MartinError::BasePathError(path.to_string()))
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn init_aws_lc_tls() {

@@ -384,11 +384,11 @@ fn iterate_tiles(tiles: Vec<TileRect>) -> impl Iterator<Item = TileCoord> {
     })
 }
 
-fn check_sources(args: &CopyArgs, state: &ServerState) -> Result<String, MartinCpError> {
+fn check_sources(args: &CopyArgs, sources: &martin::TileSources) -> Result<String, MartinCpError> {
     if let Some(source_id) = &args.source {
         Ok(source_id.clone())
     } else {
-        let source_ids = state.tiles.source_names();
+        let source_ids = sources.source_names();
         if let Some(source_id) = source_ids.first() {
             if source_ids.len() > 1 {
                 return Err(MartinCpError::MultipleSources(source_ids.join(", ")));
@@ -436,27 +436,28 @@ fn default_bounds(src: &DynTileSource) -> Vec<Bounds> {
 async fn run_tile_copy(args: CopyArgs, state: ServerState) -> MartinCpResult<()> {
     let output_file = &args.output_file;
     let concurrency = args.concurrency.get();
-    // we only warn that the concurrency might be too low if:
-    // - a user has concurrency at the default
-    // - there is at least one pg or remote pmtiles source
-    if concurrency == 1 && state.tiles.benefits_from_concurrent_scraping() {
+    let (source_id, src, warn_on_concurrency) = {
+        let sources = state.tiles.read().await;
+        let warn_on_concurrency = concurrency == 1 && sources.benefits_from_concurrent_scraping();
+        let source_id = check_sources(&args, &sources)?;
+        let src = DynTileSource::new(
+            &sources,
+            &source_id,
+            None,
+            args.url_query.as_deref().unwrap_or_default(),
+            Some(parse_encoding(args.encoding.as_str())?),
+            None,
+            None,
+            None,
+        )?;
+        (source_id, src, warn_on_concurrency)
+    };
+
+    if warn_on_concurrency {
         warn!(
             "Using `--concurrency 1`. Increasing it may improve performance for your tile sources. See https://docs.martin.rs/cli/usage.html#concurrency for further details."
         );
     }
-
-    let source_id = check_sources(&args, &state)?;
-
-    let src = DynTileSource::new(
-        &state.tiles,
-        &source_id,
-        None,
-        args.url_query.as_deref().unwrap_or_default(),
-        Some(parse_encoding(args.encoding.as_str())?),
-        None,
-        None,
-        None,
-    )?;
 
     let inferred_bboxes = if args.bbox.is_empty() {
         default_bounds(&src)

@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::config::args::PreferredEncoding;
 use crate::config::file::srv::SrvConfig;
-use crate::source::TileSources;
+use crate::source::{SharedTileSources, TileSources};
 use crate::srv::server::map_internal_error;
 
 const SUPPORTED_ENC: &[HeaderEnc] = &[
@@ -39,11 +39,12 @@ async fn get_tile(
     req: HttpRequest,
     srv_config: Data<SrvConfig>,
     path: Path<TileRequest>,
-    sources: Data<TileSources>,
+    sources: Data<SharedTileSources>,
     cache: Data<OptTileCache>,
 ) -> ActixResult<HttpResponse> {
+    let sources = sources.read().await;
     let src = DynTileSource::new(
-        sources.as_ref(),
+        &sources,
         &path.source_ids,
         Some(path.z),
         req.query_string(),

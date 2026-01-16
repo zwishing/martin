@@ -17,6 +17,9 @@ all of your configuration, which you can edit to remove any sources you don't wa
 martin  ... ... ...  --save-config config.yaml
 ```
 
+For database-driven tile source configuration, see
+[Database-Driven Configuration](config-database.md).
+
 ## Config Example
 
 ```yaml

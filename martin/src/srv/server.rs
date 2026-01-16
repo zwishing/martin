@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::string::ToString;
 use std::time::Duration;
 
 use actix_web::http::header::CACHE_CONTROL;
@@ -13,10 +12,12 @@ use lambda_web::{is_running_on_lambda, run_actix_on_lambda};
 
 #[cfg(all(feature = "webui", not(docsrs)))]
 use crate::config::args::WebUiMode;
+use crate::config::database::ConfigStatusHandle;
 use crate::config::file::ServerState;
 use crate::config::file::srv::{KEEP_ALIVE_DEFAULT, LISTEN_ADDRESSES_DEFAULT, SrvConfig};
-use crate::srv::admin::Catalog;
 use crate::{MartinError, MartinResult};
+use serde::Serialize;
+use std::sync::Arc;
 
 /// List of keywords that cannot be used as source IDs. Some of these are reserved for future use.
 /// Reserved keywords must never end in a "dot number" (e.g. ".1").
@@ -32,17 +33,43 @@ pub fn map_internal_error<T: std::fmt::Display>(e: T) -> actix_web::Error {
     actix_web::error::ErrorInternalServerError(e.to_string())
 }
 
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    config_source: crate::config::database::ConfigSource,
+    config_version: Option<i64>,
+    last_config_reload: Option<u64>,
+}
+
+fn system_time_to_unix_seconds(ts: std::time::SystemTime) -> Option<u64> {
+    ts.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
 /// Return 200 OK if healthy. Used for readiness and liveness probes.
 #[route("/health", method = "GET", method = "HEAD")]
-async fn get_health() -> impl Responder {
+async fn get_health(status: Data<ConfigStatusHandle>) -> impl Responder {
+    let status = status.read().await;
+    let response = HealthResponse {
+        status: "ok",
+        config_source: status.config_source,
+        config_version: status.config_version,
+        last_config_reload: status
+            .last_config_reload
+            .and_then(system_time_to_unix_seconds),
+    };
     HttpResponse::Ok()
         .insert_header((CACHE_CONTROL, "no-cache"))
-        .message_body("OK")
+        .json(response)
 }
 
 pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: &SrvConfig) {
     cfg.service(get_health)
         .service(crate::srv::admin::get_catalog);
+
+    #[cfg(feature = "postgres")]
+    cfg.service(crate::srv::admin::post_config_reload);
 
     #[cfg(feature = "_tiles")]
     cfg.service(crate::srv::tiles::metadata::get_source_info)
@@ -101,7 +128,7 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         )
         .build()
         .map_err(|err| MartinError::MetricsIntialisationError(err))?;
-    let catalog = Catalog::new(&state)?;
+    let shared_state = Arc::new(state);
 
     let keep_alive = Duration::from_secs(config.keep_alive.unwrap_or(KEEP_ALIVE_DEFAULT));
     let worker_processes = config.worker_processes.unwrap_or_else(num_cpus::get);
@@ -118,26 +145,27 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         let cors_middleware = cors_config.make_cors_middleware();
 
         let app = App::new()
-            .app_data(Data::new(catalog.clone()))
+            .app_data(Data::from(shared_state.clone()))
+            .app_data(Data::new(shared_state.config_status.clone()))
             .app_data(Data::new(config.clone()));
 
         #[cfg(feature = "_tiles")]
         let app = app
-            .app_data(Data::new(state.tiles.clone()))
-            .app_data(Data::new(state.tile_cache.clone()));
+            .app_data(Data::new(shared_state.tiles.clone()))
+            .app_data(Data::new(shared_state.tile_cache.clone()));
 
         #[cfg(feature = "sprites")]
         let app = app
-            .app_data(Data::new(state.sprites.clone()))
-            .app_data(Data::new(state.sprite_cache.clone()));
+            .app_data(Data::new(shared_state.sprites.clone()))
+            .app_data(Data::new(shared_state.sprite_cache.clone()));
 
         #[cfg(feature = "fonts")]
         let app = app
-            .app_data(Data::new(state.fonts.clone()))
-            .app_data(Data::new(state.font_cache.clone()));
+            .app_data(Data::new(shared_state.fonts.clone()))
+            .app_data(Data::new(shared_state.font_cache.clone()));
 
         #[cfg(feature = "styles")]
-        let app = app.app_data(Data::new(state.styles.clone()));
+        let app = app.app_data(Data::new(shared_state.styles.clone()));
 
         let app = app.wrap(middleware::Condition::new(
             cors_middleware.is_some(),

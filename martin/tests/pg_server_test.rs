@@ -7,6 +7,7 @@ use indoc::indoc;
 use insta::assert_yaml_snapshot;
 use martin::config::file::srv::SrvConfig;
 use martin_core::config::OptOneMany;
+use serde_json::Value;
 use tilejson::TileJSON;
 
 pub mod utils;
@@ -16,15 +17,15 @@ macro_rules! create_app {
     ($sources:expr) => {{
         let cfg = mock_cfg(indoc::indoc!($sources));
         let state = mock_sources(cfg).await.0;
+        let state = std::sync::Arc::new(state);
         ::actix_web::test::init_service(
             ::actix_web::App::new()
-                .app_data(actix_web::web::Data::new(
-                    ::martin::srv::Catalog::new(&state).unwrap(),
-                ))
+                .app_data(actix_web::web::Data::from(state.clone()))
+                .app_data(actix_web::web::Data::new(state.config_status.clone()))
                 .app_data(actix_web::web::Data::new(
                     ::martin_core::tiles::NO_TILE_CACHE,
                 ))
-                .app_data(actix_web::web::Data::new(state.tiles))
+                .app_data(actix_web::web::Data::new(state.tiles.clone()))
                 .app_data(actix_web::web::Data::new(SrvConfig::default()))
                 .configure(|c| ::martin::srv::router(c, &SrvConfig::default())),
         )
@@ -1001,7 +1002,38 @@ postgres:
 
     let req = test_get("/health");
     let response = call_service(&app, req).await;
-    assert_response(response).await;
+    let response = assert_response(response).await;
+    let body = read_body(response).await;
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+    assert_eq!(
+        body.get("config_source").and_then(Value::as_str),
+        Some("file")
+    );
+    assert!(body.get("config_version").is_some_and(Value::is_null));
+    assert!(body
+        .get("last_config_reload")
+        .is_some_and(Value::is_null));
+}
+
+#[actix_rt::test]
+#[tracing_test::traced_test]
+async fn pg_post_config_reload_in_file_mode_returns_400() {
+    let app = create_app! { "
+postgres:
+  connection_string: $DATABASE_URL
+"};
+
+    let req = TestRequest::post().uri("/admin/config/reload").to_request();
+    let response = call_service(&app, req).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = read_body(response).await;
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body.get("error").and_then(Value::as_str),
+        Some("Manual reload only supported in database mode")
+    );
+    assert_eq!(body.get("config_source").and_then(Value::as_str), Some("file"));
 }
 
 #[actix_rt::test]
@@ -1056,7 +1088,7 @@ tables:
     let src = table(&mock, "no_id");
     assert_eq!(src.id_column, None);
     assert!(matches!(&src.properties, Some(v) if v.len() == 1));
-    let src = source(&mock, "no_id");
+    let src = source(&mock, "no_id").await;
     assert_yaml_snapshot!(src.get_tilejson(), @r"
     tilejson: 3.0.0
     tiles: []
@@ -1126,15 +1158,15 @@ tables:
     // --------------------------------------------
 
     let state = mock_sources(cfg.clone()).await.0;
+    let state = std::sync::Arc::new(state);
     let app = ::actix_web::test::init_service(
         ::actix_web::App::new()
-            .app_data(actix_web::web::Data::new(
-                ::martin::srv::Catalog::new(&state).unwrap(),
-            ))
+            .app_data(actix_web::web::Data::from(state.clone()))
+            .app_data(actix_web::web::Data::new(state.config_status.clone()))
             .app_data(actix_web::web::Data::new(
                 ::martin_core::tiles::NO_TILE_CACHE,
             ))
-            .app_data(actix_web::web::Data::new(state.tiles))
+            .app_data(actix_web::web::Data::new(state.tiles.clone()))
             .app_data(actix_web::web::Data::new(SrvConfig::default()))
             .configure(|c| ::martin::srv::router(c, &SrvConfig::default())),
     )

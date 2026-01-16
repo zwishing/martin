@@ -1,6 +1,7 @@
 use actix_web::web::Data;
 use actix_web::{HttpResponse, Responder, middleware, route};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::MartinResult;
 use crate::config::file::ServerState;
@@ -18,10 +19,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    pub fn new(#[allow(unused_variables)] state: &ServerState) -> MartinResult<Self> {
+    pub async fn new(#[allow(unused_variables)] state: &ServerState) -> MartinResult<Self> {
         Ok(Self {
             #[cfg(feature = "_tiles")]
-            tiles: state.tiles.get_catalog(),
+            tiles: state.tiles.read().await.get_catalog(),
             #[cfg(feature = "sprites")]
             sprites: state.sprites.get_catalog()?,
             #[cfg(feature = "fonts")]
@@ -38,8 +39,38 @@ impl Catalog {
     method = "HEAD",
     wrap = "middleware::Compress::default()"
 )]
-async fn get_catalog(catalog: Data<Catalog>) -> impl Responder {
-    HttpResponse::Ok().json(catalog)
+async fn get_catalog(state: Data<Arc<ServerState>>) -> impl Responder {
+    match Catalog::new(state.as_ref()).await {
+        Ok(catalog) => HttpResponse::Ok().json(catalog),
+        Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[route("/admin/config/reload", method = "POST")]
+async fn post_config_reload(state: Data<Arc<ServerState>>) -> impl Responder {
+    let status = state.config_status.read().await;
+    if status.config_source.is_file() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Manual reload only supported in database mode",
+            "config_source": "file",
+        }));
+    }
+    if !state.admin_reload_enabled {
+        return HttpResponse::NotFound().finish();
+    }
+    let Some(handle) = state.config_reload.as_ref() else {
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Configuration reload is not available",
+        }));
+    };
+
+    match handle.clone().reload().await {
+        Ok(summary) => HttpResponse::Ok().json(summary),
+        Err(err) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": err.to_string(),
+        })),
+    }
 }
 
 #[cfg(all(feature = "webui", not(docsrs)))]

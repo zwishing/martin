@@ -15,6 +15,7 @@ This file is currently not maintained. See [release](https://github.com/maplibre
 
 * add bounds to tilejson endpoints ([#260](https://github.com/maplibre/martin/issues/260)) (h/t [@jaspervercnocke](https://github.com/jaspervercnocke)) ([40b0a0c](https://github.com/maplibre/martin/commit/40b0a0c26aa93549fc1497faaf848049e1015070))
 * add composite sources support ([#184](https://github.com/maplibre/martin/issues/184)) ([3c01125](https://github.com/maplibre/martin/commit/3c01125fc5ddb9c52aece570ae043e651c7a397c))
+* add database-driven configuration with polling and manual reload endpoint
 * add minzoom and maxzoom support ([#265](https://github.com/maplibre/martin/issues/265)) ([194a83e](https://github.com/maplibre/martin/commit/194a83e63f763323865a7f59e410e2931ce46e0a))
 * add server heartbeat for monitoring the service health ([#168](https://github.com/maplibre/martin/issues/168)) (h/t [@yamaszone](https://github.com/yamaszone)) ([fce1a9e](https://github.com/maplibre/martin/commit/fce1a9e722692b24294c3766055602768112d392))
 * add support for complex geometries ([#218](https://github.com/maplibre/martin/issues/218)) (h/t [@christianversloot](https://github.com/christianversloot)) ([8b5fbf9](https://github.com/maplibre/martin/commit/8b5fbf956545746d0f28e66fb73275ad46945259))

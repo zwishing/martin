@@ -46,9 +46,10 @@ pub async fn mock_sources(mut config: Config) -> MockSource {
 
 #[cfg(feature = "_tiles")]
 #[must_use]
-pub fn source(mock: &MockSource, name: &str) -> BoxedSource {
+pub async fn source(mock: &MockSource, name: &str) -> BoxedSource {
     let (sources, _) = mock;
-    sources.tiles.get_source(name).expect("source can be found")
+    let sources = sources.tiles.read().await;
+    sources.get_source(name).expect("source can be found")
 }
 
 #[cfg(feature = "postgres")]

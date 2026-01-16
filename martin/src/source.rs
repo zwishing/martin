@@ -4,12 +4,16 @@ use log::debug;
 use martin_core::tiles::catalog::TileCatalog;
 use martin_core::tiles::{BoxedSource, Source};
 use martin_tile_utils::TileInfo;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Thread-safe registry of tile sources indexed by ID.
 ///
 /// Uses a [`DashMap`] for concurrent access without explicit locking.
 #[derive(Default, Clone)]
 pub struct TileSources(DashMap<String, BoxedSource>);
+
+pub type SharedTileSources = Arc<RwLock<TileSources>>;
 
 impl TileSources {
     /// Creates a new registry from flattened source collections.

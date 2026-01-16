@@ -30,6 +30,7 @@ from large `PostgreSQL` databases, and serve tiles from `PMTiles` and `MBTiles` 
 * [Installation](https://maplibre.org/martin/installation.html)
 * Running with [CLI](https://maplibre.org/martin/run-with-cli.html)
   or [configuration file](https://maplibre.org/martin/config-file.html)
+* [Database-driven configuration](https://maplibre.org/martin/config-database.html)
 * [Usage and API](https://maplibre.org/martin/using.html)
 
 ## Getting Involved

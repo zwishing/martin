@@ -35,6 +35,9 @@ pub enum ConfigFileError {
     #[error("At least one 'origin' must be specified in the 'cors' configuration")]
     CorsNoOriginsConfigured,
 
+    #[error("config_refresh_interval_seconds must be >= 10 seconds (got {0})")]
+    InvalidConfigRefreshInterval(u64),
+
     #[cfg(feature = "styles")]
     #[error("Walk directory error {0}: {1}")]
     DirectoryWalking(#[source] walkdir::Error, PathBuf),

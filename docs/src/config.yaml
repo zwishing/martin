@@ -63,6 +63,24 @@ web_ui: disable
 # - `abort`: log warnings as error messages, abort startup
 on_invalid: abort
 
+# Configuration source mode for tile sources. [default: file]
+#
+# Options:
+# - `file`: load tile sources from YAML
+# - `database`: load tile sources from the martin_config schema
+config_source: file
+
+# Refresh interval for database configuration polling (seconds). [default: 60]
+# Minimum is 10 seconds.
+config_refresh_interval_seconds: 60
+
+# Enable /admin/config/reload (database mode only). [default: false]
+admin_reload_enabled: false
+
+# Optional connection string for configuration database.
+# Falls back to postgres.connection_string if unset.
+config_database: null
+
 # Advanced monitoring options
 observability:
   # Configure metrics reported under `/_/metrics`

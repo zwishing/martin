@@ -62,6 +62,18 @@ pub struct MetaArgs {
     /// By default, only print if sources are auto-detected.
     #[arg(long)]
     pub save_config: Option<PathBuf>,
+    /// Create the database configuration schema and exit.
+    #[arg(long)]
+    pub create_config_schema: bool,
+    /// Export the file-based config sources into the database and exit.
+    #[arg(long)]
+    pub export_config_to_db: bool,
+    /// Validate database configuration schema and sources, then exit.
+    #[arg(long)]
+    pub validate_db_config: bool,
+    /// Overwrite existing database entries when exporting config.
+    #[arg(long)]
+    pub overwrite: bool,
     /// Connection strings, e.g. `postgres://...` or `/path/to/files`
     pub connection: Vec<String>,
 }

@@ -10,7 +10,8 @@ pub use utils::*;
 async fn table_source() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
     insta::with_settings!({sort_maps => true}, {
-    assert_yaml_snapshot!(mock.0.tiles.get_catalog(), @r#"
+    let sources = mock.0.tiles.read().await;
+    assert_yaml_snapshot!(sources.get_catalog(), @r#"
     "-function.withweired---_-characters":
       content_type: application/x-protobuf
       description: a function source with special characters
@@ -154,7 +155,7 @@ async fn table_source() {
 #[actix_rt::test]
 async fn tables_tilejson() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
-    let src = source(&mock, "table_source");
+    let src = source(&mock, "table_source").await;
     assert_yaml_snapshot!(src.get_tilejson(), @r"
     tilejson: 3.0.0
     tiles: []
@@ -176,7 +177,7 @@ async fn tables_tilejson() {
 #[actix_rt::test]
 async fn tables_tile_ok() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
-    let tile = source(&mock, "table_source")
+    let tile = source(&mock, "table_source").await
         .get_tile(TileCoord { z: 0, x: 0, y: 0 }, None)
         .await
         .unwrap();
@@ -226,7 +227,8 @@ async fn table_source_schemas() {
           functions: false
     "});
     let sources = mock_sources(cfg).await.0;
-    assert_yaml_snapshot!(sources.tiles.get_catalog(), @r"
+    let sources = sources.tiles.read().await;
+    assert_yaml_snapshot!(sources.get_catalog(), @r"
     MixPoints:
       content_type: application/x-protobuf
       description: a description from comment on table

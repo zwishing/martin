@@ -18,6 +18,7 @@
     - [Apache](run-with-apache.md)
   - [Troubleshooting](troubleshooting.md)
 - [Configuration File](config-file.md)
+  - [Database-Driven Configuration](config-database.md)
   - [Tile sources](sources-tiles.md)
     - [MBTiles and PMTiles File Sources](sources-files.md)
     - [PostgreSQL Connections](pg-connections.md)
