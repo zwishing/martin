@@ -101,7 +101,7 @@ impl ConfigReloadHandle {
 
     pub async fn reload_if_changed(&self) -> DatabaseConfigResult<Option<ReloadSummary>> {
         let metadata = query_config_metadata(&self.inner.pool).await?;
-        let mut last_version = self.inner.last_version.lock().await;
+        let last_version = self.inner.last_version.lock().await;
         if last_version.is_some_and(|v| v == metadata.version) {
             return Ok(None);
         }

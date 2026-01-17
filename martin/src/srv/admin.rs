@@ -48,8 +48,13 @@ async fn get_catalog(state: Data<ServerState>) -> impl Responder {
 #[cfg(feature = "postgres")]
 #[route("/admin/config/reload", method = "POST")]
 async fn post_config_reload(state: Data<ServerState>) -> impl Responder {
-    let status = state.config_status.read().await;
-    if status.config_source.is_file() {
+    // Check config source, then DROP the lock before calling reload
+    let is_file_mode = {
+        let status = state.config_status.read().await;
+        status.config_source.is_file()
+    }; // ← Lock dropped here
+
+    if is_file_mode {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Manual reload only supported in database mode",
             "config_source": "file",

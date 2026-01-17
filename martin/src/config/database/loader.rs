@@ -103,8 +103,7 @@ WHERE table_schema = $1 AND table_name = $2
             )));
         }
 
-        let existing: std::collections::HashSet<String> =
-            rows.into_iter().map(|r| r.get("column_name")).collect();
+        let existing: HashSet<String> = rows.into_iter().map(|r| r.get("column_name")).collect();
         for col in columns {
             if !existing.contains(*col) {
                 return Err(DatabaseConfigError::SchemaInvalid(format!(
@@ -126,9 +125,13 @@ pub async fn load_config_from_database(
 ) -> DatabaseConfigResult<LoadedConfig> {
     validate_db_schema(pool).await?;
 
-    let metadata = query_config_metadata(pool).await?;
-    let data_sources = query_data_sources(pool).await?;
-    let file_sources = query_file_sources(pool).await?;
+    validate_db_schema(pool).await?;
+
+    let (metadata, data_sources, file_sources) = tokio::try_join!(
+        query_config_metadata(pool),
+        query_data_sources(pool),
+        query_file_sources(pool)
+    )?;
 
     let (sources, warnings) = build_sources_from_database(
         config,
@@ -618,9 +621,9 @@ fn extract_file_custom<T: crate::config::file::ConfigurationLivecycleHooks + Clo
 #[cfg(feature = "postgres")]
 pub async fn create_config_pool(
     connection_string: &str,
-    ssl_cert: Option<&std::path::PathBuf>,
-    ssl_key: Option<&std::path::PathBuf>,
-    ssl_root_cert: Option<&std::path::PathBuf>,
+    ssl_cert: Option<&PathBuf>,
+    ssl_key: Option<&PathBuf>,
+    ssl_root_cert: Option<&PathBuf>,
     pool_size: usize,
 ) -> DatabaseConfigResult<Pool> {
     let (pg_cfg, ssl_mode) = parse_conn_str(connection_string)
@@ -640,11 +643,6 @@ pub async fn create_config_pool(
         .max_size(pool_size)
         .build()
         .map_err(|e| DatabaseConfigError::ConnectionFailed(e.to_string()))
-}
-
-#[cfg(feature = "postgres")]
-pub fn apply_tilejson_patch(source: BoxedSource, patch: Option<Value>) -> BoxedSource {
-    wrap_with_tilejson_override(source, &patch)
 }
 
 #[cfg(feature = "postgres")]
