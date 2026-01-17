@@ -177,7 +177,8 @@ async fn tables_tilejson() {
 #[actix_rt::test]
 async fn tables_tile_ok() {
     let mock = mock_sources(mock_pgcfg("connection_string: $DATABASE_URL")).await;
-    let tile = source(&mock, "table_source").await
+    let tile = source(&mock, "table_source")
+        .await
         .get_tile(TileCoord { z: 0, x: 0, y: 0 }, None)
         .await
         .unwrap();

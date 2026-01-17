@@ -1,7 +1,6 @@
 use actix_web::web::Data;
 use actix_web::{HttpResponse, Responder, middleware, route};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::MartinResult;
 use crate::config::file::ServerState;
@@ -39,7 +38,7 @@ impl Catalog {
     method = "HEAD",
     wrap = "middleware::Compress::default()"
 )]
-async fn get_catalog(state: Data<Arc<ServerState>>) -> impl Responder {
+async fn get_catalog(state: Data<ServerState>) -> impl Responder {
     match Catalog::new(state.as_ref()).await {
         Ok(catalog) => HttpResponse::Ok().json(catalog),
         Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
@@ -48,7 +47,7 @@ async fn get_catalog(state: Data<Arc<ServerState>>) -> impl Responder {
 
 #[cfg(feature = "postgres")]
 #[route("/admin/config/reload", method = "POST")]
-async fn post_config_reload(state: Data<Arc<ServerState>>) -> impl Responder {
+async fn post_config_reload(state: Data<ServerState>) -> impl Responder {
     let status = state.config_status.read().await;
     if status.config_source.is_file() {
         return HttpResponse::BadRequest().json(serde_json::json!({

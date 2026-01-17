@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tokio::sync::RwLock;
 
@@ -20,7 +20,7 @@ impl ConfigSource {
         matches!(self, Self::Database)
     }
 
-    pub fn is_file(self) -> bool {
+    pub fn is_file(&self) -> bool {
         matches!(self, Self::File)
     }
 }
@@ -100,16 +100,25 @@ impl DataSourceRow {
             return Err("source_id cannot be empty".to_string());
         }
         if self.schema_name.is_empty() {
-            return Err(format!("schema_name cannot be empty for source '{}'", self.source_id));
+            return Err(format!(
+                "schema_name cannot be empty for source '{}'",
+                self.source_id
+            ));
         }
         if self.table_or_function_name.is_empty() {
-            return Err(format!("table_or_function_name cannot be empty for source '{}'", self.source_id));
+            return Err(format!(
+                "table_or_function_name cannot be empty for source '{}'",
+                self.source_id
+            ));
         }
 
         // Table-specific validation
         if self.source_type == SourceType::Table {
             if self.geometry_column.is_none() {
-                return Err(format!("geometry_column is required for table source '{}'", self.source_id));
+                return Err(format!(
+                    "geometry_column is required for table source '{}'",
+                    self.source_id
+                ));
             }
         }
 
@@ -124,7 +133,10 @@ impl FileSourceRow {
             return Err("source_id cannot be empty".to_string());
         }
         if self.file_path.is_empty() {
-            return Err(format!("file_path cannot be empty for source '{}'", self.source_id));
+            return Err(format!(
+                "file_path cannot be empty for source '{}'",
+                self.source_id
+            ));
         }
         Ok(())
     }

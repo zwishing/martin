@@ -74,8 +74,8 @@ impl From<deadpool_postgres::PoolError> for DatabaseConfigError {
 }
 
 #[cfg(feature = "postgres")]
-impl From<tokio_postgres::Error> for DatabaseConfigError {
-    fn from(err: tokio_postgres::Error) -> Self {
+impl From<deadpool_postgres::tokio_postgres::Error> for DatabaseConfigError {
+    fn from(err: deadpool_postgres::tokio_postgres::Error) -> Self {
         Self::QueryFailed(err.to_string())
     }
 }

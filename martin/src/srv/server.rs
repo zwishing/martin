@@ -17,7 +17,6 @@ use crate::config::file::ServerState;
 use crate::config::file::srv::{KEEP_ALIVE_DEFAULT, LISTEN_ADDRESSES_DEFAULT, SrvConfig};
 use crate::{MartinError, MartinResult};
 use serde::Serialize;
-use std::sync::Arc;
 
 /// List of keywords that cannot be used as source IDs. Some of these are reserved for future use.
 /// Reserved keywords must never end in a "dot number" (e.g. ".1").
@@ -128,7 +127,7 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         )
         .build()
         .map_err(|err| MartinError::MetricsIntialisationError(err))?;
-    let shared_state = Arc::new(state);
+    let shared_state = Data::new(state);
 
     let keep_alive = Duration::from_secs(config.keep_alive.unwrap_or(KEEP_ALIVE_DEFAULT));
     let worker_processes = config.worker_processes.unwrap_or_else(num_cpus::get);
@@ -145,7 +144,7 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         let cors_middleware = cors_config.make_cors_middleware();
 
         let app = App::new()
-            .app_data(Data::from(shared_state.clone()))
+            .app_data(shared_state.clone())
             .app_data(Data::new(shared_state.config_status.clone()))
             .app_data(Data::new(config.clone()));
 

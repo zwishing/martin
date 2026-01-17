@@ -3,16 +3,16 @@ use std::env;
 use clap::Parser;
 use martin::MartinResult;
 use martin::config::args::Args;
-use martin::config::file::{Config, read_config};
 #[cfg(feature = "postgres")]
 use martin::config::database::{
     ConfigPoller, create_config_schema, export_config_to_db, validate_db_config,
 };
+use martin::config::file::{Config, read_config};
 use martin::logging::{ensure_martin_core_log_level_matches, init_tracing};
 use martin::srv::new_server;
 use martin_core::config::env::OsEnv;
-use tracing::{error, info};
 use std::time::Duration;
+use tracing::{error, info};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -29,16 +29,13 @@ async fn start(args: Args) -> MartinResult<()> {
         Config::default()
     };
 
+    let meta = args.meta.clone();
     args.merge_into_config(&mut config, &env)?;
     if let Err(err) = config.finalize() {
         if matches!(
             err,
-            martin::MartinError::ConfigFileError(
-                martin::config::file::ConfigFileError::NoSources
-            )
-        ) && (args.meta.create_config_schema
-            || args.meta.export_config_to_db
-            || args.meta.validate_db_config)
+            martin::MartinError::ConfigFileError(martin::config::file::ConfigFileError::NoSources)
+        ) && (meta.create_config_schema || meta.export_config_to_db || meta.validate_db_config)
         {
             info!("No tile sources configured; continuing for admin command.");
         } else {
@@ -47,10 +44,7 @@ async fn start(args: Args) -> MartinResult<()> {
     }
 
     #[cfg(feature = "postgres")]
-    if args.meta.create_config_schema
-        || args.meta.export_config_to_db
-        || args.meta.validate_db_config
-    {
+    if meta.create_config_schema || meta.export_config_to_db || meta.validate_db_config {
         let (connection_string, ssl_certs, pool_size) = config.config_database_settings()?;
         let pool = martin::config::database::create_config_pool(
             &connection_string,
@@ -61,27 +55,25 @@ async fn start(args: Args) -> MartinResult<()> {
         )
         .await?;
 
-        if args.meta.create_config_schema {
+        if meta.create_config_schema {
             create_config_schema(&pool).await?;
             info!("Configuration schema created.");
         }
-        if args.meta.export_config_to_db {
-            let summary = export_config_to_db(&mut config, &pool, args.meta.overwrite).await?;
+        if meta.export_config_to_db {
+            let summary = export_config_to_db(&mut config, &pool, meta.overwrite).await?;
             info!(
                 "Exported {} data sources and {} file sources.",
                 summary.data_sources, summary.file_sources
             );
         }
-        if args.meta.validate_db_config {
+        if meta.validate_db_config {
             let count = validate_db_config(&config, &pool).await?;
             info!("Database configuration is valid ({} sources).", count);
         }
         return Ok(());
     }
     let config_source = config.config_source;
-    let refresh_interval = config
-        .config_refresh_interval_seconds
-        .unwrap_or(60);
+    let refresh_interval = config.config_refresh_interval_seconds.unwrap_or(60);
 
     let sources = config.resolve().await?;
     #[cfg(feature = "postgres")]
@@ -128,8 +120,21 @@ async fn start(args: Args) -> MartinResult<()> {
     server.await
 }
 
+fn install_crypto_provider() {
+    #[cfg(feature = "postgres")]
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // Only warn if we fail to install the provider. This might happen if
+        // another provider was already installed/linked.
+        tracing::warn!("Failed to install rustls crypto provider");
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    install_crypto_provider();
     let filter = ensure_martin_core_log_level_matches(env::var("RUST_LOG").ok(), "martin=");
     init_tracing(&filter, env::var("RUST_LOG_FORMAT").ok());
 

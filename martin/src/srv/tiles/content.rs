@@ -76,7 +76,7 @@ pub struct DynTileSource<'a> {
 impl<'a> DynTileSource<'a> {
     #[expect(clippy::too_many_arguments)]
     pub fn new(
-        sources: &'a TileSources,
+        sources: &TileSources,
         source_ids: &str,
         zoom: Option<u8>,
         query: &'a str,

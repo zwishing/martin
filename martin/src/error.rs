@@ -29,6 +29,9 @@ pub enum MartinError {
     #[error("The --config and the connection parameters cannot be used together. Please remove unsupported parameters '{}'", elide_vec(.0, 3, 15))]
     ConfigAndConnectionsError(Vec<String>),
 
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
     #[error("Unable to bind to {1}: {0}")]
     BindingError(#[source] io::Error, String),
 

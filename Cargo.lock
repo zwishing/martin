@@ -3765,6 +3765,7 @@ dependencies = [
  "clap",
  "criterion",
  "dashmap",
+ "deadpool-postgres",
  "enum-display",
  "futures",
  "image",

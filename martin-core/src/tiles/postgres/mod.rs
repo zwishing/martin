@@ -1,7 +1,7 @@
 mod errors;
 pub use errors::{PostgresError, PostgresResult};
 
-mod tls;
+pub mod tls;
 
 mod pool;
 pub use pool::PostgresPool;

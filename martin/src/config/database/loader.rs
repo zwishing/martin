@@ -11,11 +11,12 @@ use crate::config::database::{
     ConfigMetadata, DataSourceRow, DatabaseConfigError, DatabaseConfigResult, FileSourceRow,
     FileSourceType, SourceType,
 };
-use crate::config::file::file_config::{FileConfigEnum, FileConfigSrc, TileSourceConfiguration};
+use crate::config::file::postgres::utils::patch_json;
 use crate::config::file::postgres::{FuncInfoSources, FunctionInfo, TableInfo, TableInfoSources};
-use crate::config::file::tiles::postgres::utils::patch_json;
 use crate::config::file::{Config, ConfigFileError, TileSourceWarning};
+use crate::config::file::{FileConfigEnum, FileConfigSrc, TileSourceConfiguration};
 use crate::source::TileSources;
+use crate::srv::RESERVED_KEYWORDS;
 
 use martin_core::tiles::Source;
 use tilejson::TileJSON;
@@ -51,7 +52,11 @@ pub struct LoadedConfig {
 pub async fn validate_db_schema(pool: &Pool) -> DatabaseConfigResult<()> {
     let conn = pool.get().await?;
     let required_tables = [
-        ("martin_config", "metadata", &["id", "version", "updated_at"][..]),
+        (
+            "martin_config",
+            "metadata",
+            &["id", "version", "updated_at"][..],
+        ),
         (
             "martin_config",
             "data_sources",
@@ -70,7 +75,13 @@ pub async fn validate_db_schema(pool: &Pool) -> DatabaseConfigResult<()> {
         (
             "martin_config",
             "file_sources",
-            &["source_id", "source_type", "file_path", "properties", "enabled"][..],
+            &[
+                "source_id",
+                "source_type",
+                "file_path",
+                "properties",
+                "enabled",
+            ][..],
         ),
     ];
 
@@ -226,9 +237,9 @@ ORDER BY source_id
         .map(|row| {
             let source_type: String = row.get("source_type");
             let source_type = match source_type.as_str() {
-                "mbtiles" => crate::config::database::FileSourceType::Mbtiles,
-                "pmtiles" => crate::config::database::FileSourceType::Pmtiles,
-                "cog" => crate::config::database::FileSourceType::Cog,
+                "mbtiles" => FileSourceType::Mbtiles,
+                "pmtiles" => FileSourceType::Pmtiles,
+                "cog" => FileSourceType::Cog,
                 other => {
                     return Err(DatabaseConfigError::DeserializationFailed(format!(
                         "unknown source_type '{other}'"
@@ -282,8 +293,8 @@ async fn build_sources_from_database(
         #[cfg(feature = "pmtiles")]
         pmtiles_cache,
     )
-        .await
-        .map_err(|e| DatabaseConfigError::ValidationFailed(e.to_string()))?;
+    .await
+    .map_err(|e| DatabaseConfigError::ValidationFailed(e.to_string()))?;
     warnings.extend(file_config_sources.1);
     if !file_config_sources.0.is_empty() {
         sources.push(file_config_sources.0);
@@ -411,7 +422,10 @@ fn wrap_with_tilejson_override(source: BoxedSource, patch: &Option<Value>) -> Bo
         return source;
     };
     let tilejson = patch_json(source.get_tilejson().clone(), Some(patch));
-    Box::new(TilejsonOverrideSource { inner: source, tilejson })
+    Box::new(TilejsonOverrideSource {
+        inner: source,
+        tilejson,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -422,9 +436,9 @@ struct TilejsonOverrideSource {
 
 #[cfg(feature = "pmtiles")]
 fn update_pmtiles_cache(
-    mut custom: crate::config::file::tiles::pmtiles::PmtConfig,
+    mut custom: crate::config::file::pmtiles::PmtConfig,
     cache: Option<martin_core::tiles::pmtiles::PmtCache>,
-) -> crate::config::file::tiles::pmtiles::PmtConfig {
+) -> crate::config::file::pmtiles::PmtConfig {
     if let Some(cache) = cache {
         custom.pmtiles_directory_cache = cache;
     }
@@ -444,7 +458,7 @@ async fn create_file_source(
         #[cfg(feature = "mbtiles")]
         FileSourceType::Mbtiles => {
             let custom = extract_file_custom(&config.mbtiles);
-            let resolved = resolve_file_id::<crate::config::file::tiles::mbtiles::MbtConfig>(
+            let resolved = resolve_file_id::<crate::config::file::mbtiles::MbtConfig>(
                 id_resolver,
                 &row.source_id,
                 &src,
@@ -459,7 +473,7 @@ async fn create_file_source(
         #[cfg(feature = "pmtiles")]
         FileSourceType::Pmtiles => {
             let custom = update_pmtiles_cache(extract_file_custom(&config.pmtiles), pmtiles_cache);
-            let resolved = resolve_file_id::<crate::config::file::tiles::pmtiles::PmtConfig>(
+            let resolved = resolve_file_id::<crate::config::file::pmtiles::PmtConfig>(
                 id_resolver,
                 &row.source_id,
                 &src,
@@ -473,7 +487,7 @@ async fn create_file_source(
         #[cfg(feature = "unstable-cog")]
         FileSourceType::Cog => {
             let custom = extract_file_custom(&config.cog);
-            let resolved = resolve_file_id::<crate::config::file::tiles::cog::CogConfig>(
+            let resolved = resolve_file_id::<crate::config::file::cog::CogConfig>(
                 id_resolver,
                 &row.source_id,
                 &src,
@@ -496,11 +510,17 @@ async fn create_source_with_urls<T: TileSourceConfiguration>(
     custom: T,
     id: String,
     source: FileConfigSrc,
-) -> Result<BoxedSource, ConfigFileError> {
+) -> Result<BoxedSource, String> {
     if let Some(url) = parse_url(T::parse_urls(), source.get_path())? {
-        Ok(custom.new_sources_url(id, url).await?)
+        Ok(custom
+            .new_sources_url(id, url)
+            .await
+            .map_err(|e| e.to_string())?)
     } else {
-        Ok(custom.new_sources(id, source.into_path()).await?)
+        Ok(custom
+            .new_sources(id, source.into_path())
+            .await
+            .map_err(|e| e.to_string())?)
     }
 }
 
@@ -508,16 +528,16 @@ fn resolve_file_id<T: TileSourceConfiguration>(
     id_resolver: &IdResolver,
     id: &str,
     source: &FileConfigSrc,
-) -> Result<String, ConfigFileError> {
+) -> Result<String, String> {
     if let Some(url) = parse_url(T::parse_urls(), source.get_path())? {
         Ok(id_resolver.resolve(id, url.to_string()))
     } else {
-        let can = source.abs_path()?;
+        let can = source.abs_path().map_err(|e| e.to_string())?;
         Ok(id_resolver.resolve(id, can.to_string_lossy().to_string()))
     }
 }
 
-fn parse_url(is_enabled: bool, path: &PathBuf) -> Result<Option<url::Url>, ConfigFileError> {
+fn parse_url(is_enabled: bool, path: &PathBuf) -> Result<Option<url::Url>, String> {
     if !is_enabled {
         return Ok(None);
     }
@@ -527,7 +547,7 @@ fn parse_url(is_enabled: bool, path: &PathBuf) -> Result<Option<url::Url>, Confi
     ];
     path.to_str()
         .filter(|v| url_schemes.iter().any(|scheme| v.starts_with(scheme)))
-        .map(|v| url::Url::parse(v).map_err(|e| ConfigFileError::InvalidSourceUrl(e, v.to_string())))
+        .map(|v| url::Url::parse(v).map_err(|e| e.to_string()))
         .transpose()
 }
 
@@ -608,13 +628,14 @@ pub async fn create_config_pool(
     let mgr_config = ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     };
-    let mgr = if pg_cfg.get_ssl_mode() == deadpool_postgres::tokio_postgres::config::SslMode::Disable {
-        Manager::from_config(pg_cfg, NoTls, mgr_config)
-    } else {
-        let connector = make_connector(ssl_cert, ssl_key, ssl_root_cert, ssl_mode)
-            .map_err(|e| DatabaseConfigError::ConnectionFailed(e.to_string()))?;
-        Manager::from_config(pg_cfg, connector, mgr_config)
-    };
+    let mgr =
+        if pg_cfg.get_ssl_mode() == deadpool_postgres::tokio_postgres::config::SslMode::Disable {
+            Manager::from_config(pg_cfg, NoTls, mgr_config)
+        } else {
+            let connector = make_connector(ssl_cert, ssl_key, ssl_root_cert, ssl_mode)
+                .map_err(|e| DatabaseConfigError::ConnectionFailed(e.to_string()))?;
+            Manager::from_config(pg_cfg, connector, mgr_config)
+        };
     Pool::builder(mgr)
         .max_size(pool_size)
         .build()
@@ -700,9 +721,12 @@ pub async fn export_config_to_db(
         FileSourceType::Mbtiles,
     ));
     #[cfg(feature = "unstable-cog")]
-    file_sources.extend(collect_file_sources(&export_config.cog, FileSourceType::Cog));
+    file_sources.extend(collect_file_sources(
+        &export_config.cog,
+        FileSourceType::Cog,
+    ));
 
-    let conn = pool.get().await?;
+    let mut conn = pool.get().await?;
     let transaction = conn.transaction().await?;
 
     let mut data_inserted = 0;
@@ -733,7 +757,19 @@ ON CONFLICT DO NOTHING
 "#
         };
         let affected = transaction
-            .execute(sql, &[&source_id, &source_type, &schema, &name, &geom, &srid, &id_column, &props])
+            .execute(
+                sql,
+                &[
+                    &source_id,
+                    &source_type,
+                    &schema,
+                    &name,
+                    &geom,
+                    &srid,
+                    &id_column,
+                    &props,
+                ],
+            )
             .await?;
         data_inserted += affected as usize;
     }
@@ -798,20 +834,50 @@ fn collect_file_sources<T: crate::config::file::ConfigurationLivecycleHooks + Cl
     cfg: &FileConfigEnum<T>,
     source_type: FileSourceType,
 ) -> Vec<(String, String, String)> {
-    let FileConfigEnum::Config(cfg) = cfg.clone().into_config() else {
-        return Vec::new();
+    let type_str = match source_type {
+        FileSourceType::Mbtiles => "mbtiles",
+        FileSourceType::Pmtiles => "pmtiles",
+        FileSourceType::Cog => "cog",
     };
-    let mut result = Vec::new();
-    if let Some(sources) = cfg.sources {
-        for (source_id, source) in sources {
-            let path = source.get_path().to_string_lossy().to_string();
-            let source_type = match source_type {
-                FileSourceType::Mbtiles => "mbtiles",
-                FileSourceType::Pmtiles => "pmtiles",
-                FileSourceType::Cog => "cog",
-            };
-            result.push((source_id, source_type.to_string(), path));
+
+    match cfg {
+        FileConfigEnum::None => Vec::new(),
+        FileConfigEnum::Path(path) => {
+            let id = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            vec![(id, type_str.to_string(), path.to_string_lossy().to_string())]
+        }
+        FileConfigEnum::Paths(paths) => paths
+            .iter()
+            .map(|path| {
+                let id = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                (id, type_str.to_string(), path.to_string_lossy().to_string())
+            })
+            .collect(),
+        FileConfigEnum::Config(cfg) => {
+            let mut results = Vec::new();
+            if let Some(sources) = &cfg.sources {
+                results.extend(sources.iter().map(|(id, src)| {
+                    (
+                        id.clone(),
+                        type_str.to_string(),
+                        src.get_path().to_string_lossy().to_string(),
+                    )
+                }));
+            }
+            results.extend(cfg.paths.iter().map(|path| {
+                let id = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                (id, type_str.to_string(), path.to_string_lossy().to_string())
+            }));
+            results
         }
     }
-    result
 }

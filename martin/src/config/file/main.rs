@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use subst::VariableMap;
 use tokio::sync::RwLock;
 
+#[cfg(feature = "postgres")]
+use crate::config::database::{ConfigReloadHandle, create_config_pool, load_config_from_database};
+use crate::config::database::{ConfigSource, ConfigStatus, ConfigStatusHandle};
 #[cfg(any(
     feature = "pmtiles",
     feature = "mbtiles",
@@ -31,15 +34,12 @@ use tokio::sync::RwLock;
 use crate::config::file::FileConfigEnum;
 #[cfg(any(feature = "_tiles", feature = "sprites", feature = "fonts"))]
 use crate::config::file::cache::CacheConfig;
+#[cfg(feature = "postgres")]
+use crate::config::file::postgres::POOL_SIZE_DEFAULT;
 use crate::config::file::{
     ConfigFileError, ConfigFileResult, ConfigurationLivecycleHooks, UnrecognizedKeys,
     UnrecognizedValues, copy_unrecognized_keys_from_config,
 };
-use crate::config::database::{ConfigSource, ConfigStatus, ConfigStatusHandle};
-#[cfg(feature = "postgres")]
-use crate::config::database::{ConfigReloadHandle, create_config_pool, load_config_from_database};
-#[cfg(feature = "postgres")]
-use crate::config::file::postgres::POOL_SIZE_DEFAULT;
 use crate::source::{SharedTileSources, TileSources};
 #[cfg(feature = "_tiles")]
 use crate::srv::RESERVED_KEYWORDS;
@@ -287,8 +287,7 @@ impl Config {
             {
                 info!("Using database-driven configuration for tile sources.");
                 self.warn_ignored_yaml_sources();
-                let (connection_string, ssl_certs, pool_size) =
-                    self.config_database_settings()?;
+                let (connection_string, ssl_certs, pool_size) = self.config_database_settings()?;
                 let pool = create_config_pool(
                     &connection_string,
                     ssl_certs.and_then(|c| c.ssl_cert.as_ref()),
@@ -511,7 +510,7 @@ impl Config {
     }
 
     #[cfg(feature = "postgres")]
-    pub(crate) fn config_database_settings(
+    pub fn config_database_settings(
         &self,
     ) -> MartinResult<(String, Option<&super::postgres::PostgresSslCerts>, usize)> {
         if let Some(conn) = &self.config_database {
@@ -642,7 +641,7 @@ pub fn init_aws_lc_tls() {
     static INIT_TLS: LazyLock<()> = LazyLock::new(|| {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
-            .expect("Unable to init rustls: {e:?}");
+            .ok(); // Ignore error if already installed
     });
     *INIT_TLS;
 }

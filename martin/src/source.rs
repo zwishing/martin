@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 /// Thread-safe registry of tile sources indexed by ID.
 ///
 /// Uses a [`DashMap`] for concurrent access without explicit locking.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct TileSources(DashMap<String, BoxedSource>);
 
 pub type SharedTileSources = Arc<RwLock<TileSources>>;

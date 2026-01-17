@@ -5,7 +5,9 @@ use log::{debug, error, info};
 use martin_core::config::IdResolver;
 use tokio::sync::{Mutex, watch};
 
-use crate::config::database::{ConfigStatusHandle, DatabaseConfigResult, load_config_from_database, query_config_metadata};
+use crate::config::database::{
+    ConfigStatusHandle, DatabaseConfigResult, load_config_from_database, query_config_metadata,
+};
 use crate::config::file::Config;
 use crate::source::SharedTileSources;
 use crate::srv::RESERVED_KEYWORDS;

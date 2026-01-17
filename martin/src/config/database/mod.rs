@@ -12,9 +12,12 @@ pub use types::{
 #[cfg(feature = "postgres")]
 mod loader;
 #[cfg(feature = "postgres")]
-pub use loader::{LoadedConfig, create_config_pool, load_config_from_database, query_config_metadata, validate_db_schema};
+pub use loader::{ExportSummary, create_config_schema, export_config_to_db, validate_db_config};
 #[cfg(feature = "postgres")]
-pub use loader::{create_config_schema, export_config_to_db, validate_db_config, ExportSummary};
+pub use loader::{
+    LoadedConfig, create_config_pool, load_config_from_database, query_config_metadata,
+    validate_db_schema,
+};
 
 #[cfg(feature = "postgres")]
 mod poller;

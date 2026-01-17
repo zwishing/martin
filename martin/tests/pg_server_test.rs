@@ -1011,9 +1011,7 @@ postgres:
         Some("file")
     );
     assert!(body.get("config_version").is_some_and(Value::is_null));
-    assert!(body
-        .get("last_config_reload")
-        .is_some_and(Value::is_null));
+    assert!(body.get("last_config_reload").is_some_and(Value::is_null));
 }
 
 #[actix_rt::test]
@@ -1033,7 +1031,10 @@ postgres:
         body.get("error").and_then(Value::as_str),
         Some("Manual reload only supported in database mode")
     );
-    assert_eq!(body.get("config_source").and_then(Value::as_str), Some("file"));
+    assert_eq!(
+        body.get("config_source").and_then(Value::as_str),
+        Some("file")
+    );
 }
 
 #[actix_rt::test]
