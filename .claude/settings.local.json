@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(unset ANTHROPIC_AUTH_TOKEN)"
+      "Bash(unset ANTHROPIC_AUTH_TOKEN)",
+      "Bash(cargo build:*)"
     ]
   }
 }

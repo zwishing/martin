@@ -1,0 +1,4 @@
+---
+idls:
+  - source: local
+    path: idl/maptile.thrift

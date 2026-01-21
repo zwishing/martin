@@ -1,0 +1,32 @@
+# Maptile RPC Service Configuration
+# This is an example configuration file for the Maptile Thrift RPC service
+
+# Server configuration
+server:
+  # Listen address for the RPC service
+  # Default: 0.0.0.0:8089
+  listen_address: "0.0.0.0:8089"
+
+# PostgreSQL connection configuration
+postgres:
+  # PostgreSQL connection string
+  # Format: postgresql://[user[:password]@][host][:port][/database][?params]
+  connection_string: "postgres://postgres:admin@localhost:5432/mapseek"
+
+  # Connection pool size
+  # Default: 10
+  pool_size: 10
+
+  # Optional SSL configuration
+  # ssl_cert: /path/to/client-cert.pem
+  # ssl_key: /path/to/client-key.pem
+  # ssl_root_cert: /path/to/ca-cert.pem
+
+# Configuration settings
+config:
+  # Configuration source (only "database" is supported for maptile)
+  source: database
+
+  # Reload interval in seconds for hot reload
+  # Set to null or remove to disable hot reload
+  reload_interval_sec: 10

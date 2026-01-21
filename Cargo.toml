@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["martin", "martin-core", "martin-tile-utils", "mbtiles"]
+members = ["martin", "martin-core", "martin-tile-utils", "mbtiles", "maptile"]
 
 [workspace.package]
 edition = "2024"
@@ -85,6 +85,7 @@ object_store = { version = "0.12.4", features = [
     "http",
 ] }
 pbf_font_tools = { version = "3.0.0", features = ["freetype"] }
+pilota = "0.11"
 pmtiles = { version = "0.18.2", features = ["tilejson", "object-store"] }
 png = "0.18.0"
 postgis = "0.9"
@@ -136,6 +137,9 @@ tracing-log = { version = "0.2.0", features = ["interest-cache"] }
 tracing-subscriber = { version = "0.3", default-features = false }
 tracing-test = "0.2"
 url = "2.5"
+volo = "0.10"
+volo-build = "0.10"
+volo-thrift = "0.10"
 walkdir = "2.5.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
