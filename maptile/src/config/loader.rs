@@ -7,6 +7,7 @@ use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use log::{info, warn};
 use martin_core::tiles::BoxedSource;
 use martin_core::tiles::postgres::tls::{make_connector, parse_conn_str};
+use martin_tile_utils::EARTH_CIRCUMFERENCE_DEGREES;
 use thiserror::Error;
 
 use super::{ConfigMetadata, DataSourceRow, MaptileConfig, PostgresConfig, SourceType};
@@ -38,6 +39,10 @@ pub enum ConfigError {
 
 pub type ConfigResult<T> = Result<T, ConfigError>;
 
+const DEFAULT_EXTENT: u32 = 4096;
+const DEFAULT_BUFFER: u32 = 64;
+const DEFAULT_CLIP_GEOM: bool = true;
+
 /// Loaded configuration with sources
 #[derive(Clone)]
 pub struct LoadedSources {
@@ -46,6 +51,12 @@ pub struct LoadedSources {
 }
 
 /// Load configuration from YAML file
+///
+/// # Errors
+///
+/// Returns error if:
+/// - File cannot be read
+/// - YAML parsing fails
 pub async fn load_config(path: &Path) -> ConfigResult<MaptileConfig> {
     let content = tokio::fs::read_to_string(path).await?;
     let config: MaptileConfig = serde_yaml::from_str(&content)?;
@@ -53,6 +64,13 @@ pub async fn load_config(path: &Path) -> ConfigResult<MaptileConfig> {
 }
 
 /// Create a database connection pool for configuration loading
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Connection string parsing fails
+/// - SSL/TLS configuration is invalid
+/// - Pool creation fails
 pub async fn create_config_pool(config: &PostgresConfig) -> ConfigResult<Pool> {
     let (pg_cfg, ssl_mode) = parse_conn_str(&config.connection_string)
         .map_err(|e| ConfigError::ConnectionFailed(e.to_string()))?;
@@ -82,6 +100,12 @@ pub async fn create_config_pool(config: &PostgresConfig) -> ConfigResult<Pool> {
 }
 
 /// Validate that the required database schema exists
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Database connection fails
+/// - Required tables or columns are missing
 pub async fn validate_db_schema(pool: &Pool) -> ConfigResult<()> {
     let conn = pool
         .get()
@@ -114,11 +138,9 @@ pub async fn validate_db_schema(pool: &Pool) -> ConfigResult<()> {
     for (schema, table, columns) in required_tables {
         let rows = conn
             .query(
-                r#"
-SELECT column_name
+                "SELECT column_name
 FROM information_schema.columns
-WHERE table_schema = $1 AND table_name = $2
-"#,
+WHERE table_schema = $1 AND table_name = $2",
                 &[&schema, &table],
             )
             .await
@@ -144,6 +166,12 @@ WHERE table_schema = $1 AND table_name = $2
 }
 
 /// Query configuration metadata from database
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Database connection fails
+/// - Query execution fails
 pub async fn query_config_metadata(pool: &Pool) -> ConfigResult<ConfigMetadata> {
     let conn = pool
         .get()
@@ -165,6 +193,13 @@ pub async fn query_config_metadata(pool: &Pool) -> ConfigResult<ConfigMetadata> 
 }
 
 /// Query data sources from database
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Database connection fails
+/// - Query execution fails
+/// - Source type is invalid
 pub async fn query_data_sources(pool: &Pool) -> ConfigResult<Vec<DataSourceRow>> {
     let conn = pool
         .get()
@@ -173,8 +208,7 @@ pub async fn query_data_sources(pool: &Pool) -> ConfigResult<Vec<DataSourceRow>>
 
     let rows = conn
         .query(
-            r#"
-SELECT
+            "SELECT
   source_id,
   source_type,
   schema_name,
@@ -186,8 +220,7 @@ SELECT
   enabled
 FROM martin_config.data_sources
 WHERE enabled = TRUE
-ORDER BY source_id
-"#,
+ORDER BY source_id",
             &[],
         )
         .await
@@ -221,6 +254,13 @@ ORDER BY source_id
 }
 
 /// Load sources from database configuration
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Schema validation fails
+/// - Metadata query fails
+/// - Source loading fails or no sources are enabled
 pub async fn load_sources_from_database(
     config: &MaptileConfig,
     pool: &Pool,
@@ -235,9 +275,9 @@ pub async fn load_sources_from_database(
     }
 
     info!(
-        "Loaded {} data sources from database (version {})",
-        data_sources.len(),
-        metadata.version
+        "Loaded {count} data sources from database (version {version})",
+        count = data_sources.len(),
+        version = metadata.version
     );
 
     // Build PostgreSQL sources using martin-core
@@ -267,14 +307,15 @@ async fn build_postgres_sources(
     .await
     .map_err(|e| ConfigError::ConnectionFailed(e.to_string()))?;
 
+    let supports_tile_margin = pg_pool.supports_tile_margin();
     for row in data_sources {
         if let Err(err) = row.validate() {
-            warn!("Skipping source '{}': {}", row.source_id, err);
+            warn!("Skipping source '{source_id}': {err}", source_id = row.source_id);
             continue;
         }
 
         if !identifiers_valid(row) {
-            warn!("Skipping source '{}': invalid identifier", row.source_id);
+            warn!("Skipping source '{source_id}': invalid identifier", source_id = row.source_id);
             continue;
         }
 
@@ -282,8 +323,8 @@ async fn build_postgres_sources(
             SourceType::Table => {
                 let geometry_column = row.geometry_column.clone().ok_or_else(|| {
                     ConfigError::SourceResolutionFailed(format!(
-                        "geometry_column is required for table source '{}'",
-                        row.source_id
+                        "geometry_column is required for table source '{source_id}'",
+                        source_id = row.source_id
                     ))
                 })?;
 
@@ -294,12 +335,17 @@ async fn build_postgres_sources(
                     &geometry_column,
                     row.id_column.as_deref(),
                     row.srid.unwrap_or(4326),
+                    supports_tile_margin,
                 );
 
                 let info = PostgresSqlInfo::new(
                     sql_query.clone(),
                     false, // no URL query params
-                    format!("{}:{}", row.source_id, row.table_or_function_name),
+                    format!(
+                        "{source_id}:{table}",
+                        source_id = row.source_id,
+                        table = row.table_or_function_name
+                    ),
                 );
 
                 // Build tilejson from properties
@@ -309,7 +355,7 @@ async fn build_postgres_sources(
                     PostgresSource::new(row.source_id.clone(), info, tilejson, pg_pool.clone());
 
                 sources.push(Box::new(source) as BoxedSource);
-                info!("Loaded table source: {}", row.source_id);
+                info!("Loaded table source: {source_id}", source_id = row.source_id);
             }
             SourceType::Function => {
                 // Build SQL query for function source
@@ -318,7 +364,11 @@ async fn build_postgres_sources(
                 let info = PostgresSqlInfo::new(
                     sql_query.clone(),
                     true, // functions typically support URL query params
-                    format!("{}:{}", row.source_id, row.table_or_function_name),
+                    format!(
+                        "{source_id}:{table}",
+                        source_id = row.source_id,
+                        table = row.table_or_function_name
+                    ),
                 );
 
                 let tilejson = build_tilejson(&row.source_id, row.properties.as_ref());
@@ -327,7 +377,7 @@ async fn build_postgres_sources(
                     PostgresSource::new(row.source_id.clone(), info, tilejson, pg_pool.clone());
 
                 sources.push(Box::new(source) as BoxedSource);
-                info!("Loaded function source: {}", row.source_id);
+                info!("Loaded function source: {source_id}", source_id = row.source_id);
             }
         }
     }
@@ -347,15 +397,11 @@ fn identifiers_valid(row: &DataSourceRow) -> bool {
     }
 
     if row.source_type == SourceType::Table {
-        if let Some(geometry_column) = row.geometry_column.as_deref() {
-            if !is_valid_identifier(geometry_column) {
-                return false;
-            }
+        if let Some(geometry_column) = row.geometry_column.as_deref() && !is_valid_identifier(geometry_column) {
+            return false;
         }
-        if let Some(id_column) = row.id_column.as_deref() {
-            if !is_valid_identifier(id_column) {
-                return false;
-            }
+        if let Some(id_column) = row.id_column.as_deref() && !is_valid_identifier(id_column) {
+            return false;
         }
     }
 
@@ -381,31 +427,52 @@ fn build_table_query(
     table: &str,
     geometry_column: &str,
     id_column: Option<&str>,
-    _srid: i32,
+    srid: i32,
+    supports_tile_margin: bool,
 ) -> String {
     let (id_select_expr, id_mvt_expr) = id_column
-        .map(|id| (format!(", {id}"), format!(", '{}'", id.replace('\'', "''"))))
+        .map(|id| {
+            let escaped = id.replace('\'', "''");
+            (format!(", {id}"), format!(", '{escaped}'"))
+        })
         .unwrap_or_default();
 
+    let extent = DEFAULT_EXTENT;
+    let buffer = DEFAULT_BUFFER;
+    let clip_geom = DEFAULT_CLIP_GEOM;
+    let bbox_search = build_bbox_search(srid, buffer, extent, supports_tile_margin);
+
     format!(
-        r#"SELECT ST_AsMVT(tile, '{table}', 4096, 'geom'{id_mvt_expr}) FROM (
-  SELECT ST_AsMVTGeom(
-    ST_Transform({geometry_column}, 3857),
-    ST_TileEnvelope($1::integer, $2::integer, $3::integer),
-    4096, 64, true
-  ) AS geom{id_select_expr}
-  FROM "{schema}"."{table}"
-  WHERE ST_Intersects(
-    ST_Transform({geometry_column}, 4326),
-    ST_Transform(ST_TileEnvelope($1::integer, $2::integer, $3::integer), 4326)
-  )
-) AS tile"#
+        "SELECT\n  ST_AsMVT(tile, '{table}', {extent}, 'geom'{id_mvt_expr})\nFROM (\n  SELECT\n    ST_AsMVTGeom(\n      ST_Transform(ST_CurveToLine({geometry_column}::geometry), 3857),\n      ST_TileEnvelope($1::integer, $2::integer, $3::integer),\n      {extent}, {buffer}, {clip_geom}\n    ) AS geom{id_select_expr}\n  FROM \"{schema}\".\"{table}\"\n  WHERE {geometry_column} && {bbox_search}\n) AS tile"
     )
+}
+
+fn build_bbox_search(srid: i32, buffer: u32, extent: u32, supports_tile_margin: bool) -> String {
+    if buffer == 0 {
+        return format!(
+            "ST_Transform(ST_TileEnvelope($1::integer, $2::integer, $3::integer), {srid})"
+        );
+    }
+
+    let margin = f64::from(buffer) / f64::from(extent);
+    if supports_tile_margin && srid == 3857 {
+        format!(
+            "ST_Transform(ST_TileEnvelope($1::integer, $2::integer, $3::integer, margin => {margin}), {srid})"
+        )
+    } else if srid == 4326 {
+        format!(
+            "ST_Expand(ST_Transform(ST_TileEnvelope($1::integer, $2::integer, $3::integer), {srid}), ({margin} * {EARTH_CIRCUMFERENCE_DEGREES}) / 2^$1::integer)"
+        )
+    } else {
+        format!(
+            "ST_Transform(ST_TileEnvelope($1::integer, $2::integer, $3::integer), {srid})"
+        )
+    }
 }
 
 /// Build SQL query for function source
 fn build_function_query(schema: &str, function: &str) -> String {
-    format!(r#"SELECT * FROM "{schema}"."{function}"($1, $2, $3, $4)"#)
+    format!("SELECT * FROM \"{schema}\".\"{function}\"($1, $2, $3, $4)")
 }
 
 /// Build TileJSON from source properties
@@ -417,20 +484,20 @@ fn build_tilejson(source_id: &str, properties: Option<&serde_json::Value>) -> ti
 
     if let Some(props) = properties {
         if let Some(obj) = props.as_object() {
-            if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+            if let Some(name) = obj.get("name").and_then(serde_json::Value::as_str) {
                 tj.name = Some(name.to_string());
             }
-            if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
+            if let Some(desc) = obj.get("description").and_then(serde_json::Value::as_str) {
                 tj.description = Some(desc.to_string());
             }
-            if let Some(attr) = obj.get("attribution").and_then(|v| v.as_str()) {
+            if let Some(attr) = obj.get("attribution").and_then(serde_json::Value::as_str) {
                 tj.attribution = Some(attr.to_string());
             }
-            if let Some(minzoom) = obj.get("minzoom").and_then(|v| v.as_u64()) {
-                tj.minzoom = Some(minzoom as u8);
+            if let Some(minzoom) = obj.get("minzoom").and_then(serde_json::Value::as_u64) {
+                tj.minzoom = u8::try_from(minzoom).ok();
             }
-            if let Some(maxzoom) = obj.get("maxzoom").and_then(|v| v.as_u64()) {
-                tj.maxzoom = Some(maxzoom as u8);
+            if let Some(maxzoom) = obj.get("maxzoom").and_then(serde_json::Value::as_u64) {
+                tj.maxzoom = u8::try_from(maxzoom).ok();
             }
         }
     }

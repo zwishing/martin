@@ -66,13 +66,18 @@ async fn main() -> anyhow::Result<()> {
             source_id: source_id.clone().into(),
             coord,
             query_params: None,
+            source_ids: None,
+            accept_encoding: None,
+            if_none_match: None,
         };
         match client.get_tile(req).await {
             Ok(MaybeException::Ok(resp)) => {
                 println!(
-                    "Got tile: {} bytes, type: {}",
+                    "Got tile: {} bytes, type: {}, etag: {:?}, not_modified: {:?}",
                     resp.data.len(),
-                    resp.content_type
+                    resp.content_type,
+                    resp.etag,
+                    resp.not_modified
                 );
             }
             Ok(MaybeException::Exception(ex)) => {
@@ -99,14 +104,19 @@ async fn main() -> anyhow::Result<()> {
                     source_id: source.source_id.clone(),
                     coord: TileCoord { z: 0, x: 0, y: 0 },
                     query_params: None,
+                    source_ids: None,
+                    accept_encoding: None,
+                    if_none_match: None,
                 };
 
                 match client.get_tile(req).await {
                     Ok(MaybeException::Ok(resp)) => {
                         println!(
-                            "Got tile: {} bytes, type: {}",
+                            "Got tile: {} bytes, type: {}, etag: {:?}, not_modified: {:?}",
                             resp.data.len(),
-                            resp.content_type
+                            resp.content_type,
+                            resp.etag,
+                            resp.not_modified
                         );
                     }
                     Ok(MaybeException::Exception(ex)) => {

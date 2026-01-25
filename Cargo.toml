@@ -97,6 +97,7 @@ postgres = { version = "0.19", features = [
 postgres-protocol = "0.6"
 pretty_assertions = "1"
 regex = "1"
+redis = { version = "0.28", features = ["tokio-comp", "streams"] }
 rstest = "0.26.1"
 rustls = { version = "0.23.31", features = ["ring"] }
 # ring feature does not require NASM windows executable, but works slower

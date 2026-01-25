@@ -12,8 +12,8 @@ use serde::Deserialize;
 use tokio::sync::{RwLock, watch};
 use tokio::time::sleep;
 
-use super::{MaptileConfig, RedisConfig, create_config_pool, load_sources_from_database};
-use crate::server::MaptileServiceImpl;
+use super::{MaptileConfig, RedisConfig, load_sources_from_database};
+use crate::handler::MaptileServiceImpl;
 
 const REDIS_STREAM: &str = "dataset:result";
 const REDIS_CONSUMER_GROUP: &str = "dataset-result-maptile-consumers";
@@ -72,24 +72,19 @@ pub async fn start_redis_consumer_task(
     config: MaptileConfig,
     redis_config: RedisConfig,
     shutdown: watch::Receiver<bool>,
+    pool: Pool,
 ) {
     info!(
-        "Starting Redis consumer for stream '{}' (group '{}')",
-        REDIS_STREAM, REDIS_CONSUMER_GROUP
+        "Starting Redis consumer for stream '{REDIS_STREAM}' (group '{REDIS_CONSUMER_GROUP}')"
     );
-
-    let pool = match create_config_pool(&config.postgres).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            error!("Failed to create database pool for Redis consumer: {err}");
-            return;
-        }
-    };
 
     let consumer_name = redis_config
         .consumer_name
         .clone()
-        .unwrap_or_else(|| format!("maptile-{}", std::process::id()));
+        .unwrap_or_else(|| format!("maptile-{pid}", pid = std::process::id()));
+
+    let mut retry_delay = Duration::from_millis(200);
+    let max_retry_delay = Duration::from_secs(30);
 
     loop {
         if *shutdown.borrow() {
@@ -101,16 +96,20 @@ pub async fn start_redis_consumer_task(
             Ok(connection) => connection,
             Err(err) => {
                 error!("Redis connection failed: {err}");
-                sleep(Duration::from_secs(2)).await;
+                sleep(retry_delay).await;
+                retry_delay = (retry_delay * 2).min(max_retry_delay);
                 continue;
             }
         };
 
         if let Err(err) = ensure_consumer_group(&mut connection).await {
             error!("Failed to ensure Redis consumer group: {err}");
-            sleep(Duration::from_secs(2)).await;
+            sleep(retry_delay).await;
+            retry_delay = (retry_delay * 2).min(max_retry_delay);
             continue;
         }
+
+        retry_delay = Duration::from_millis(200);
 
         loop {
             if *shutdown.borrow() {
@@ -132,6 +131,8 @@ pub async fn start_redis_consumer_task(
                 }
                 Err(err) => {
                     warn!("Redis read failed: {err}");
+                    sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(max_retry_delay);
                     break;
                 }
             }
@@ -241,8 +242,9 @@ async fn handle_entry(
 
     if message.kind != "vector" {
         info!(
-            "Skipping Redis message {} with kind '{}'",
-            entry.id, message.kind
+            "Skipping Redis message {id} with kind '{kind}'",
+            id = entry.id,
+            kind = message.kind
         );
         return Ok(());
     }
@@ -255,8 +257,9 @@ async fn handle_entry(
     refresh_sources(service, config, pool).await?;
 
     info!(
-        "Applied vector source '{}' from Redis message {}",
-        data_source.source_id, entry.id
+        "Applied vector source '{source_id}' from Redis message {id}",
+        source_id = data_source.source_id,
+        id = entry.id
     );
 
     Ok(())
@@ -296,12 +299,12 @@ fn parse_optional_string_field(
     let Some(value) = fields.get(field) else {
         return Ok(None);
     };
-    String::from_redis_value(value)
-        .map(Some)
-        .map_err(|err| ConsumerError::InvalidField {
+    String::from_redis_value(value).map(Some).map_err(|err| {
+        ConsumerError::InvalidField {
             field,
             details: err.to_string(),
-        })
+        }
+    })
 }
 
 fn parse_vector_metadata(payload: &str) -> Result<VectorMetadata, ConsumerError> {
@@ -333,10 +336,7 @@ fn resolve_processed_path(message: &DatasetResultMessage) -> Result<String, Cons
 }
 
 impl VectorDataSource {
-    fn from_metadata(
-        metadata: VectorMetadata,
-        processed_path: &str,
-    ) -> Result<Self, ConsumerError> {
+    fn from_metadata(metadata: VectorMetadata, processed_path: &str) -> Result<Self, ConsumerError> {
         if processed_path.trim().is_empty() {
             return Err(ConsumerError::EmptyProcessedPath);
         }
@@ -393,8 +393,7 @@ async fn write_vector_source(pool: &Pool, data_source: &VectorDataSource) -> Res
         .await
         .map_err(|err| ConsumerError::Database(err.to_string()))?;
 
-    let sql = r#"
-INSERT INTO martin_config.data_sources
+    let sql = "INSERT INTO martin_config.data_sources
   (source_id, source_type, schema_name, table_or_function_name, geometry_column, srid, id_column, properties, enabled)
 VALUES
   ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
@@ -406,8 +405,7 @@ ON CONFLICT (source_id) DO UPDATE SET
   srid = EXCLUDED.srid,
   id_column = EXCLUDED.id_column,
   properties = EXCLUDED.properties,
-  enabled = TRUE
-"#;
+  enabled = TRUE";
 
     transaction
         .execute(
@@ -475,7 +473,7 @@ mod tests {
         fields.insert(
             "payload".to_string(),
             Value::BulkString(
-                br#"{"uid":"u1","dataset_uid":"d1","tenant_uid":"t1","srid":4326,"bound":[0.0,0.0,1.0,1.0],"attributes_schema":{},"geometry_type":"MULTIPOLYGON","feature_count":1}"#.to_vec(),
+                b"{\"uid\":\"u1\",\"dataset_uid\":\"d1\",\"tenant_uid\":\"t1\",\"srid\":4326,\"bound\":[0.0,0.0,1.0,1.0],\"attributes_schema\":{},\"geometry_type\":\"MULTIPOLYGON\",\"feature_count\":1}".to_vec(),
             ),
         );
         fields.insert(
@@ -492,7 +490,7 @@ mod tests {
 
     #[test]
     fn vector_metadata_builds_data_source() {
-        let payload = r#"{"uid":"u1","dataset_uid":"d1","tenant_uid":"t1","srid":4326,"bound":[0.0,0.0,1.0,1.0],"attributes_schema":{},"geometry_type":"MULTIPOLYGON","feature_count":1}"#;
+        let payload = "{\"uid\":\"u1\",\"dataset_uid\":\"d1\",\"tenant_uid\":\"t1\",\"srid\":4326,\"bound\":[0.0,0.0,1.0,1.0],\"attributes_schema\":{},\"geometry_type\":\"MULTIPOLYGON\",\"feature_count\":1}";
         let metadata = parse_vector_metadata(payload).expect("metadata");
         let data_source = VectorDataSource::from_metadata(metadata, "vector.roads")
             .expect("data source");

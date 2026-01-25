@@ -1,34 +1,8 @@
-## MODIFIED Requirements
+# server-initialization Specification
 
-### Requirement: Server Initialization
-Martin SHALL initialize tile sources during startup based on the configured configuration mode.
-
-#### Scenario: Startup in file mode (existing behavior)
-- **WHEN** Martin starts with `config_source: file` or no `config_source` specified
-- **THEN** Martin loads configuration from YAML and environment variables
-- **AND** discovers tile sources via auto-discovery or explicit configuration
-- **AND** builds source registry
-- **AND** starts HTTP server
-- **AND** no background configuration poller is spawned
-
-#### Scenario: Startup in database mode
-- **WHEN** Martin starts with `config_source: database`
-- **THEN** Martin loads base configuration from YAML (ports, cache, TLS)
-- **AND** validates that `martin_config` schema exists in the database
-- **AND** queries configuration tables for tile sources
-- **AND** builds initial source registry
-- **AND** starts HTTP server
-- **AND** spawns background configuration poller task (if refresh interval > 0)
-
-#### Scenario: Configuration poller lifecycle
-- **WHEN** Martin starts in database mode with a valid `config_refresh_interval_seconds`
-- **THEN** Martin spawns a tokio background task for configuration polling
-- **AND** the poller task runs continuously until server shutdown
-- **AND** the poller sleeps for the configured interval between checks
-- **AND** server shutdown gracefully stops the poller task
-
-## ADDED Requirements
-
+## Purpose
+TBD - created by archiving change add-db-driven-config. Update Purpose after archive.
+## Requirements
 ### Requirement: Background Configuration Polling
 Martin SHALL poll configuration tables periodically when running in database mode.
 
@@ -86,3 +60,4 @@ Martin SHALL provide administrative HTTP endpoints for configuration management.
 - **THEN** response includes `config_source` field indicating current mode
 - **AND** if in database mode, includes `last_config_reload` timestamp
 - **AND** includes `config_version` (current version number)
+

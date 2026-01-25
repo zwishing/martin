@@ -17,6 +17,10 @@ pub struct MaptileConfig {
     /// Configuration source settings
     #[serde(default)]
     pub config: ConfigSettings,
+
+    /// Redis configuration (optional)
+    #[serde(default)]
+    pub redis: Option<RedisConfig>,
 }
 
 /// Server configuration
@@ -74,6 +78,17 @@ pub struct ConfigSettings {
     pub reload_interval_sec: Option<u64>,
 }
 
+/// Redis connection configuration
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RedisConfig {
+    /// Redis connection URL
+    pub url: String,
+
+    /// Optional consumer name (defaults to process-based name)
+    #[serde(default)]
+    pub consumer_name: Option<String>,
+}
+
 impl Default for ConfigSettings {
     fn default() -> Self {
         Self {
@@ -117,22 +132,22 @@ impl DataSourceRow {
         }
         if self.schema_name.is_empty() {
             return Err(format!(
-                "schema_name cannot be empty for source '{}'",
-                self.source_id
+                "schema_name cannot be empty for source '{source_id}'",
+                source_id = self.source_id
             ));
         }
         if self.table_or_function_name.is_empty() {
             return Err(format!(
-                "table_or_function_name cannot be empty for source '{}'",
-                self.source_id
+                "table_or_function_name cannot be empty for source '{source_id}'",
+                source_id = self.source_id
             ));
         }
 
         // Table-specific validation
         if self.source_type == SourceType::Table && self.geometry_column.is_none() {
             return Err(format!(
-                "geometry_column is required for table source '{}'",
-                self.source_id
+                "geometry_column is required for table source '{source_id}'",
+                source_id = self.source_id
             ));
         }
 

@@ -30,3 +30,8 @@ config:
   # Reload interval in seconds for hot reload
   # Set to null or remove to disable hot reload
   reload_interval_sec: 10
+
+# Redis Stream configuration (optional)
+redis:
+  # Redis connection URL
+  url: "redis://localhost:6379"

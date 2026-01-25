@@ -7,10 +7,11 @@
 #![warn(clippy::pedantic)]
 
 pub mod config;
-pub mod server;
+pub mod handler;
+pub mod infra;
 
 // Include the generated Thrift code
 include!(concat!(env!("OUT_DIR"), "/volo_gen.rs"));
 
 pub use config::{MaptileConfig, load_config};
-pub use server::MaptileServiceImpl;
+pub use handler::MaptileServiceImpl;

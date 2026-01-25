@@ -12,6 +12,12 @@ struct TileRequest {
     1: required string source_id,
     2: required TileCoord coord,
     3: optional map<string, string> query_params,
+    /// Optional composite sources, comma-separated (preferred over source_id when set).
+    4: optional string source_ids,
+    /// Optional Accept-Encoding header value (e.g., "gzip, br").
+    5: optional string accept_encoding,
+    /// Optional If-None-Match header value.
+    6: optional string if_none_match,
 }
 
 /// Response containing tile data
@@ -20,6 +26,8 @@ struct TileResponse {
     2: required string content_type,
     3: optional string content_encoding,
     4: optional string etag,
+    /// True when the response represents a not-modified result.
+    5: optional bool not_modified,
 }
 
 /// Information about a tile source

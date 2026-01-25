@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: PostgreSQL Source Discovery
 PostgreSQL tile sources SHALL be discovered through auto-discovery OR explicit configuration from YAML OR database tables.
