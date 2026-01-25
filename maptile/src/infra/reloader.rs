@@ -8,7 +8,9 @@ use log::{error, info};
 use tokio::sync::{RwLock, watch};
 use tokio::time::interval;
 
-use crate::config::{ConfigResult, MaptileConfig, load_sources_from_database, query_config_metadata};
+use crate::config::{
+    ConfigResult, MaptileConfig, load_sources_from_database, query_config_metadata,
+};
 use crate::handler::MaptileServiceImpl;
 
 /// Start the configuration reload task
@@ -22,9 +24,7 @@ pub async fn start_reload_task(
     let mut interval = interval(Duration::from_secs(reload_interval_sec));
     let mut last_version: Option<i64> = None;
 
-    info!(
-        "Starting configuration reload task (interval: {reload_interval_sec}s)"
-    );
+    info!("Starting configuration reload task (interval: {reload_interval_sec}s)");
 
     loop {
         tokio::select! {

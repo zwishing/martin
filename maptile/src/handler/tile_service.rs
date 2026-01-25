@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use volo_thrift::{MaybeException, ServerError};
 
 use crate::config::{ConfigMetadata, MaptileConfig, load_sources_from_database};
+use crate::handler::smart_routing::{has_filter_params, resolve_source_id};
 use crate::volo_gen::maptile::r#gen::{
     MaptileService, MaptileServiceGetSourceInfoException, MaptileServiceGetTileException,
     MaptileServiceListSourcesException, TileCoord as ThriftTileCoord, TileError, TileInfo,
@@ -79,7 +80,11 @@ fn parse_accept_encoding(accept: &str) -> Vec<AcceptEncodingItem> {
 }
 
 fn last_quality(items: &[AcceptEncodingItem], token: AcceptEncodingToken) -> Option<f32> {
-    items.iter().rev().find(|item| item.token == token).map(|item| item.quality)
+    items
+        .iter()
+        .rev()
+        .find(|item| item.token == token)
+        .map(|item| item.quality)
 }
 
 fn identity_acceptable(items: &[AcceptEncodingItem]) -> bool {
@@ -356,11 +361,27 @@ impl MaptileService for Arc<RwLock<MaptileServiceImpl>> {
         let (sources, use_url_query) = {
             let service = self.read().await;
 
+            // Convert query_params to HashMap for smart routing
+            let query_params_map: HashMap<String, String> = request
+                .query_params
+                .as_ref()
+                .map(|params| {
+                    params
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Get list of available source IDs for smart routing
+            let available_sources: Vec<String> =
+                service.source_map.keys().map(|k| k.to_string()).collect();
+
             // Resolve source IDs: prefer source_ids (comma-separated), fallback to source_id
             let id_string = if let Some(ids) = &request.source_ids {
-                ids.clone()
+                ids.as_str()
             } else {
-                request.source_id.clone().into()
+                request.source_id.as_str()
             };
 
             let mut sources = Vec::new();
@@ -373,14 +394,22 @@ impl MaptileService for Arc<RwLock<MaptileServiceImpl>> {
                     return Ok(MaybeException::Exception(
                         MaptileServiceGetTileException::Error(TileError {
                             code: 400,
-                            message: format!(
-                                "Too many sources: maximum {MAX_SOURCE_IDS} allowed"
-                            )
-                            .into(),
+                            message: format!("Too many sources: maximum {MAX_SOURCE_IDS} allowed")
+                                .into(),
                         }),
                     ));
                 }
-                if let Some(source) = service.get_source(id) {
+
+                // 🎯 SMART ROUTING: Automatically select filtered variant if query params exist
+                let resolved_id = resolve_source_id(id, &query_params_map, &available_sources);
+
+                if let Some(source) = service.get_source(&resolved_id) {
+                    info!(
+                        "Resolved source '{}' → '{}' (has_filters: {})",
+                        id,
+                        resolved_id,
+                        has_filter_params(&query_params_map)
+                    );
                     sources.push(source.clone());
                 } else {
                     return Ok(MaybeException::Exception(
@@ -460,13 +489,15 @@ impl MaptileService for Arc<RwLock<MaptileServiceImpl>> {
 
         // Fetch tiles in parallel to match HTTP semantics
         let tiles = match try_join_all(sources.iter().map(|s| async {
-            s.get_tile_with_etag(coord, url_query.as_ref()).await.map_err(|e| {
-                error!("Failed to get tile from source '{}': {e}", s.get_id());
-                TileError {
-                    code: 500,
-                    message: "Internal error while fetching tile".into(),
-                }
-            })
+            s.get_tile_with_etag(coord, url_query.as_ref())
+                .await
+                .map_err(|e| {
+                    error!("Failed to get tile from source '{}': {e}", s.get_id());
+                    TileError {
+                        code: 500,
+                        message: "Internal error while fetching tile".into(),
+                    }
+                })
         }))
         .await
         {
@@ -510,7 +541,9 @@ impl MaptileService for Arc<RwLock<MaptileServiceImpl>> {
 
         // Merge logic
         let (merged_data, merged_etag) = if non_empty_tiles.len() == 1 {
-            let tile = non_empty_tiles.pop().expect("non_empty_tiles has exactly 1 element");
+            let tile = non_empty_tiles
+                .pop()
+                .expect("non_empty_tiles has exactly 1 element");
             (tile.data, tile.etag)
         } else {
             // Validate merge capability (MVT only)
@@ -787,6 +820,8 @@ mod tests {
                 ssl_cert: None,
                 ssl_key: None,
                 ssl_root_cert: None,
+                auto_generate_filters: false,
+                filter_function_suffix: "filtered".to_string(),
             },
             config: ConfigSettings::default(),
             redis: None,

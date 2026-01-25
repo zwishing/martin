@@ -89,8 +89,20 @@ pub struct PostgresCfgPublish {
     #[serde(default, skip_serializing_if = "OptBoolObj::is_none")]
     pub functions: OptBoolObj<PostgresCfgPublishFuncs>,
 
+    /// Auto-generate filtered tile functions for table sources (default: false)
+    #[serde(default)]
+    pub auto_generate_filters: bool,
+
+    /// Suffix for auto-generated filtered functions (default: "filtered")
+    #[serde(default = "default_filter_suffix")]
+    pub filter_function_suffix: String,
+
     #[serde(flatten, skip_serializing)]
     pub unrecognized: UnrecognizedValues,
+}
+
+fn default_filter_suffix() -> String {
+    "filtered".to_string()
 }
 
 impl ConfigurationLivecycleHooks for PostgresCfgPublish {

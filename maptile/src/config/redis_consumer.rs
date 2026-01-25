@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use deadpool_postgres::Pool;
 use log::{error, info, warn};
-use redis::streams::StreamReadReply;
 use redis::FromRedisValue;
+use redis::streams::StreamReadReply;
 use serde::Deserialize;
 use tokio::sync::{RwLock, watch};
 use tokio::time::sleep;
@@ -58,7 +58,10 @@ enum ConsumerError {
     #[error("Missing field '{0}'")]
     MissingField(&'static str),
     #[error("Invalid field '{field}': {details}")]
-    InvalidField { field: &'static str, details: String },
+    InvalidField {
+        field: &'static str,
+        details: String,
+    },
     #[error("Payload parse failed: {0}")]
     PayloadParse(String),
     #[error("Processed path is empty")]
@@ -74,9 +77,7 @@ pub async fn start_redis_consumer_task(
     shutdown: watch::Receiver<bool>,
     pool: Pool,
 ) {
-    info!(
-        "Starting Redis consumer for stream '{REDIS_STREAM}' (group '{REDIS_CONSUMER_GROUP}')"
-    );
+    info!("Starting Redis consumer for stream '{REDIS_STREAM}' (group '{REDIS_CONSUMER_GROUP}')");
 
     let consumer_name = redis_config
         .consumer_name
@@ -254,6 +255,27 @@ async fn handle_entry(
     let data_source = VectorDataSource::from_metadata(metadata, &processed_path)?;
 
     write_vector_source(pool, &data_source).await?;
+
+    // Auto-generate filtered function if enabled
+    if config.postgres.auto_generate_filters {
+        match auto_generate_for_source(pool, &data_source, &config.postgres.filter_function_suffix)
+            .await
+        {
+            Ok(function_name) => {
+                info!(
+                    "Generated filtered function '{}' for source '{}' from Redis message {}",
+                    function_name, data_source.source_id, entry.id
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to generate filtered function for '{}': {}",
+                    data_source.source_id, e
+                );
+            }
+        }
+    }
+
     refresh_sources(service, config, pool).await?;
 
     info!(
@@ -299,12 +321,12 @@ fn parse_optional_string_field(
     let Some(value) = fields.get(field) else {
         return Ok(None);
     };
-    String::from_redis_value(value).map(Some).map_err(|err| {
-        ConsumerError::InvalidField {
+    String::from_redis_value(value)
+        .map(Some)
+        .map_err(|err| ConsumerError::InvalidField {
             field,
             details: err.to_string(),
-        }
-    })
+        })
 }
 
 fn parse_vector_metadata(payload: &str) -> Result<VectorMetadata, ConsumerError> {
@@ -336,7 +358,10 @@ fn resolve_processed_path(message: &DatasetResultMessage) -> Result<String, Cons
 }
 
 impl VectorDataSource {
-    fn from_metadata(metadata: VectorMetadata, processed_path: &str) -> Result<Self, ConsumerError> {
+    fn from_metadata(
+        metadata: VectorMetadata,
+        processed_path: &str,
+    ) -> Result<Self, ConsumerError> {
         if processed_path.trim().is_empty() {
             return Err(ConsumerError::EmptyProcessedPath);
         }
@@ -383,7 +408,10 @@ fn parse_processed_path(processed_path: &str) -> Result<(String, String), Consum
     Ok((schema_name.to_string(), table_or_function_name.to_string()))
 }
 
-async fn write_vector_source(pool: &Pool, data_source: &VectorDataSource) -> Result<(), ConsumerError> {
+async fn write_vector_source(
+    pool: &Pool,
+    data_source: &VectorDataSource,
+) -> Result<(), ConsumerError> {
     let mut conn = pool
         .get()
         .await
@@ -440,6 +468,239 @@ ON CONFLICT (source_id) DO UPDATE SET
     Ok(())
 }
 
+/// Auto-generate a filtered tile function for a vector data source
+async fn auto_generate_for_source(
+    pool: &Pool,
+    data_source: &VectorDataSource,
+    suffix: &str,
+) -> Result<String, ConsumerError> {
+    // For now, we'll create a simplified SQL function directly
+    // Full integration with martin's TableInfo requires more refactoring
+
+    let function_name = format!("{}_{}", data_source.table_or_function_name, suffix);
+    let schema = &data_source.schema_name;
+    let table = &data_source.table_or_function_name;
+    let geom_col = &data_source.geometry_column;
+    let srid = data_source.srid.unwrap_or(4326);
+
+    // Get all columns except geometry column for properties
+    let (properties_list, properties_list_quoted) = match pool.get().await {
+        Ok(client) => {
+            let query = format!(
+                "SELECT column_name FROM information_schema.columns \
+                 WHERE table_schema = $1 AND table_name = $2 AND column_name != $3 \
+                 ORDER BY ordinal_position"
+            );
+            match client.query(&query, &[schema, table, geom_col]).await {
+                Ok(rows) => {
+                    let list = rows
+                        .iter()
+                        .map(|r| {
+                            let col: String = r.get(0);
+                            format!("\"{}\"", col.replace("\"", "\"\""))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let quoted = rows
+                        .iter()
+                        .map(|r| {
+                            let col: String = r.get(0);
+                            format!("'{}'", col.replace("'", "''"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (list, quoted)
+                }
+                Err(e) => {
+                    return Err(ConsumerError::Database(format!(
+                        "Failed to get columns: {}",
+                        e
+                    )));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(ConsumerError::Database(format!(
+                "Failed to get database connection: {}",
+                e
+            )));
+        }
+    };
+
+    // Skip if no properties (only geometry column)
+    if properties_list.is_empty() {
+        return Err(ConsumerError::Database(format!(
+            "Table '{}.{}' has no properties (only geometry), skipping filter generation",
+            schema, table
+        )));
+    }
+
+    // Generate a simplified filtered function SQL
+    let sql = format!(
+        r#"
+CREATE OR REPLACE FUNCTION {schema}.{function_name}(
+    z int2,
+    x int8,
+    y int8,
+    query_params json DEFAULT '{{}}'::json
+)
+RETURNS bytea
+LANGUAGE plpgsql
+STABLE STRICT PARALLEL SAFE
+AS $$
+DECLARE
+    mvt bytea;
+    limit_val integer;
+    offset_val integer;
+    where_clauses text[] := ARRAY[]::text[];
+    order_clause text := '';
+    properties_clause text := '';
+    key text;
+    value text;
+BEGIN
+    -- Get tile envelope
+    -- bbox := ST_TileEnvelope(z, x, y);
+
+    -- Parse limit parameter
+    limit_val := COALESCE((query_params->>'limit')::integer, 10000);
+    IF limit_val > 100000 THEN limit_val := 100000; END IF;
+
+    -- Parse offset parameter
+    offset_val := COALESCE((query_params->>'offset')::integer, 0);
+
+    -- Parse sortby parameter
+    IF (query_params::jsonb) ? 'sortby' THEN
+        DECLARE
+            sortby_val text := query_params->>'sortby';
+        BEGIN
+            IF sortby_val LIKE '-%' THEN
+                order_clause := format(' ORDER BY %I DESC', ltrim(sortby_val, '-'));
+            ELSE
+                order_clause := format(' ORDER BY %I ASC', ltrim(sortby_val, '+'));
+            END IF;
+        END;
+    END IF;
+
+    -- Parse properties parameter (column selection)
+    IF (query_params::jsonb) ? 'properties' THEN
+        FOR key IN SELECT trim(k) FROM unnest(string_to_array(query_params->>'properties', ',')) AS k
+        LOOP
+            IF key IN ({properties_list_quoted}) THEN
+                 properties_clause := properties_clause || ', ' || quote_ident(key);
+            END IF;
+        END LOOP;
+    END IF;
+
+    -- If no valid properties selected, use all allowed properties
+    IF properties_clause = '' THEN
+        properties_clause := ', {properties}';
+    END IF;
+
+    -- Parse property filters
+    FOR key, value IN SELECT * FROM jsonb_each_text(query_params::jsonb)
+    LOOP
+        IF key IN ('limit', 'offset', 'sortby', 'properties') THEN
+            CONTINUE;
+        END IF;
+
+        -- Handle range filters with left() to remove suffix
+        IF key LIKE '%_min' THEN
+            where_clauses := array_append(
+                where_clauses,
+                format('%I >= %L', left(key, -4), value)
+            );
+        ELSIF key LIKE '%_max' THEN
+            where_clauses := array_append(
+                where_clauses,
+                format('%I <= %L', left(key, -4), value)
+            );
+        ELSE
+            where_clauses := array_append(
+                where_clauses,
+                format('%I = %L', key, value)
+            );
+        END IF;
+    END LOOP;
+
+    -- Build WHERE clause
+    DECLARE
+        additional_where text := '';
+    BEGIN
+        IF array_length(where_clauses, 1) > 0 THEN
+            additional_where := ' AND ' || array_to_string(where_clauses, ' AND ');
+        END IF;
+
+        -- Execute dynamic query
+        EXECUTE format($sql$
+            SELECT ST_AsMVT(tile, %L, 4096, 'geom')
+            FROM (
+                SELECT
+                    ST_AsMVTGeom(
+                        ST_Transform(%I, 3857),
+                        ST_TileEnvelope(%s, %s, %s),
+                        4096, 64, true
+                    ) AS geom
+                    %s
+                FROM {schema}.{table}
+                WHERE %I && ST_Transform(ST_TileEnvelope(%s, %s, %s), {srid})
+                %s
+                %s
+                LIMIT %s OFFSET %s
+            ) AS tile
+            WHERE geom IS NOT NULL
+        $sql$,
+            '{table}',
+            '{geom_col}',
+            z, x, y,
+            properties_clause,
+            '{geom_col}',
+            z, x, y,
+            additional_where,
+            order_clause,
+            limit_val,
+            offset_val
+        ) INTO mvt;
+    END;
+
+    RETURN COALESCE(mvt, ''::bytea);
+END;
+$$;"#,
+        schema = schema,
+        function_name = function_name,
+        table = table,
+        geom_col = geom_col,
+        srid = srid,
+        properties = properties_list
+    );
+
+    // Execute the SQL to create the function
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| ConsumerError::Database(e.to_string()))?;
+
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| ConsumerError::Database(format!("Failed to create function: {}", e)))?;
+
+    // Register the filtered function in martin_config.data_sources
+    let source_id = format!("{}.{}", schema, function_name);
+    let register_sql = r#"
+        INSERT INTO martin_config.data_sources
+        (source_id, source_type, schema_name, table_or_function_name, enabled)
+        VALUES ($1, 'function', $2, $3, true)
+        ON CONFLICT (source_id) DO UPDATE SET enabled = true
+    "#;
+
+    client
+        .execute(register_sql, &[&source_id, &schema, &function_name])
+        .await
+        .map_err(|e| ConsumerError::Database(format!("Failed to register function: {}", e)))?;
+
+    Ok(function_name)
+}
+
 async fn refresh_sources(
     service: &Arc<RwLock<MaptileServiceImpl>>,
     config: &MaptileConfig,
@@ -492,8 +753,8 @@ mod tests {
     fn vector_metadata_builds_data_source() {
         let payload = "{\"uid\":\"u1\",\"dataset_uid\":\"d1\",\"tenant_uid\":\"t1\",\"srid\":4326,\"bound\":[0.0,0.0,1.0,1.0],\"attributes_schema\":{},\"geometry_type\":\"MULTIPOLYGON\",\"feature_count\":1}";
         let metadata = parse_vector_metadata(payload).expect("metadata");
-        let data_source = VectorDataSource::from_metadata(metadata, "vector.roads")
-            .expect("data source");
+        let data_source =
+            VectorDataSource::from_metadata(metadata, "vector.roads").expect("data source");
 
         assert_eq!(data_source.source_id, "vector.roads");
         assert_eq!(data_source.schema_name, "vector");
@@ -501,6 +762,9 @@ mod tests {
         assert_eq!(data_source.geometry_column, "geom");
         assert_eq!(data_source.id_column, "gid");
         assert_eq!(data_source.srid, Some(4326));
-        assert!(data_source.properties.is_none());
+        // Properties should contain attributes_schema
+        assert!(data_source.properties.is_some());
+        let props = data_source.properties.as_ref().unwrap();
+        assert!(props.get("attributes_schema").is_some());
     }
 }

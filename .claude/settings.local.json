@@ -2,7 +2,24 @@
   "permissions": {
     "allow": [
       "Bash(unset ANTHROPIC_AUTH_TOKEN)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(cargo test:*)",
+      "Bash(openspec list:*)",
+      "Bash(openspec propose:*)",
+      "Bash(openspec --help:*)",
+      "Bash(openspec change --help:*)",
+      "Bash(openspec new --help:*)",
+      "Bash(openspec new:*)",
+      "Bash(openspec validate:*)",
+      "Bash(kill:*)",
+      "Bash(docker ps:*)",
+      "Bash(lsof:*)",
+      "Bash(psql:*)",
+      "Bash(docker exec:*)",
+      "Bash(pgrep:*)",
+      "Bash(grep:*)"
     ]
   }
 }

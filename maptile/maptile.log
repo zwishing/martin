@@ -1,0 +1,44 @@
+warning: missing documentation for a module
+ --> martin-core/src/tiles/postgres/mod.rs:4:1
+  |
+4 | pub mod tls;
+  | ^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> martin-core/src/lib.rs:3:9
+  |
+3 | #![warn(missing_docs)]
+  |         ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> martin-core/src/tiles/postgres/tls.rs:29:5
+   |
+29 |     Unmodified(SslMode),
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> martin-core/src/tiles/postgres/tls.rs:30:5
+   |
+30 |     VerifyCa,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> martin-core/src/tiles/postgres/tls.rs:31:5
+   |
+31 |     VerifyFull,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> martin-core/src/tiles/postgres/tls.rs:126:1
+    |
+126 | / pub fn make_connector(
+127 | |     ssl_cert: Option<&PathBuf>,
+128 | |     ssl_key: Option<&PathBuf>,
+129 | |     ssl_root_cert: Option<&PathBuf>,
+130 | |     ssl_mode: SslModeOverride,
+131 | | ) -> PostgresResult<MakeRustlsConnect> {
+    | |______________________________________^
+
+warning: `martin-core` (lib) generated 5 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.02s
+     Running `target/debug/maptile --config maptile/config.yaml`

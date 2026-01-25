@@ -17,6 +17,14 @@ postgres:
   # Default: 10
   pool_size: 10
 
+  # Auto-generate filtered tile functions at startup
+  # Default: false
+  auto_generate_filters: true
+
+  # Suffix for auto-generated filtered functions
+  # Default: "filtered"
+  filter_function_suffix: "filtered"
+
   # Optional SSL configuration
   # ssl_cert: /path/to/client-cert.pem
   # ssl_key: /path/to/client-key.pem
@@ -29,7 +37,7 @@ config:
 
   # Reload interval in seconds for hot reload
   # Set to null or remove to disable hot reload
-  reload_interval_sec: 10
+  reload_interval_sec: 60
 
 # Redis Stream configuration (optional)
 redis:

@@ -8,11 +8,9 @@ use clap::Parser;
 use log::{error, info};
 use tokio::sync::{RwLock, watch};
 
-use maptile::config::{
-    create_config_pool, load_config, start_redis_consumer_task,
-};
-use maptile::infra::start_reload_task;
+use maptile::config::{create_config_pool, load_config, start_redis_consumer_task};
 use maptile::handler::MaptileServiceImpl;
+use maptile::infra::start_reload_task;
 use maptile::volo_gen::maptile::r#gen::MaptileServiceServer;
 
 /// Maptile - High-performance Thrift RPC microservice for vector tiles
@@ -41,7 +39,10 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    info!("Loading configuration from: {path}", path = args.config.display());
+    info!(
+        "Loading configuration from: {path}",
+        path = args.config.display()
+    );
     let config = load_config(&args.config).await?;
 
     let addr: SocketAddr = config.server.listen_address.parse()?;
@@ -50,7 +51,10 @@ async fn main() -> anyhow::Result<()> {
     let config_pool = create_config_pool(&config.postgres).await?;
 
     // Initialize the service
+    // Note: Auto-generation of filtered functions happens during source loading
+    // if config.postgres.auto_generate_filters is enabled
     let service = MaptileServiceImpl::new(config.clone(), config_pool.clone()).await?;
+
     let service = Arc::new(RwLock::new(service));
     let service_for_reload = Arc::clone(&service);
 
