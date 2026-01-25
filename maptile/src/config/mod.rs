@@ -1,14 +1,12 @@
 //! Configuration module
 
 pub mod loader;
-pub mod redis_consumer;
 pub mod types;
 
 pub use loader::{
     ConfigResult, create_config_pool, load_config, load_sources_from_database,
     query_config_metadata,
 };
-pub use redis_consumer::start_redis_consumer_task;
 pub use types::*;
 #[cfg(test)]
 mod tests {

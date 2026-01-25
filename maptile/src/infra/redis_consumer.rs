@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tokio::sync::{RwLock, watch};
 use tokio::time::sleep;
 
-use super::{MaptileConfig, RedisConfig, load_sources_from_database};
+use crate::config::{MaptileConfig, RedisConfig, load_sources_from_database};
 use crate::handler::MaptileServiceImpl;
 
 const REDIS_STREAM: &str = "dataset:result";
@@ -468,6 +468,8 @@ ON CONFLICT (source_id) DO UPDATE SET
     Ok(())
 }
 
+use crate::infra::generator::{fetch_table_columns, generate_filtered_function_sql};
+
 /// Auto-generate a filtered tile function for a vector data source
 async fn auto_generate_for_source(
     pool: &Pool,
@@ -484,47 +486,21 @@ async fn auto_generate_for_source(
     let srid = data_source.srid.unwrap_or(4326);
 
     // Get all columns except geometry column for properties
-    let (properties_list, properties_list_quoted) = match pool.get().await {
-        Ok(client) => {
-            let query = format!(
-                "SELECT column_name FROM information_schema.columns \
-                 WHERE table_schema = $1 AND table_name = $2 AND column_name != $3 \
-                 ORDER BY ordinal_position"
-            );
-            match client.query(&query, &[schema, table, geom_col]).await {
-                Ok(rows) => {
-                    let list = rows
-                        .iter()
-                        .map(|r| {
-                            let col: String = r.get(0);
-                            format!("\"{}\"", col.replace("\"", "\"\""))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let quoted = rows
-                        .iter()
-                        .map(|r| {
-                            let col: String = r.get(0);
-                            format!("'{}'", col.replace("'", "''"))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    (list, quoted)
-                }
-                Err(e) => {
-                    return Err(ConsumerError::Database(format!(
-                        "Failed to get columns: {}",
-                        e
-                    )));
-                }
-            }
-        }
-        Err(e) => {
-            return Err(ConsumerError::Database(format!(
-                "Failed to get database connection: {}",
-                e
-            )));
-        }
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| ConsumerError::Database(e.to_string()))?;
+
+    let (properties_list, properties_list_quoted) = match fetch_table_columns(
+        &client,
+        schema,
+        table,
+        geom_col,
+    )
+    .await
+    {
+        Ok(cols) => cols,
+        Err(e) => return Err(ConsumerError::Database(e)),
     };
 
     // Skip if no properties (only geometry column)
@@ -536,149 +512,17 @@ async fn auto_generate_for_source(
     }
 
     // Generate a simplified filtered function SQL
-    let sql = format!(
-        r#"
-CREATE OR REPLACE FUNCTION {schema}.{function_name}(
-    z int2,
-    x int8,
-    y int8,
-    query_params json DEFAULT '{{}}'::json
-)
-RETURNS bytea
-LANGUAGE plpgsql
-STABLE STRICT PARALLEL SAFE
-AS $$
-DECLARE
-    mvt bytea;
-    limit_val integer;
-    offset_val integer;
-    where_clauses text[] := ARRAY[]::text[];
-    order_clause text := '';
-    properties_clause text := '';
-    key text;
-    value text;
-BEGIN
-    -- Get tile envelope
-    -- bbox := ST_TileEnvelope(z, x, y);
-
-    -- Parse limit parameter
-    limit_val := COALESCE((query_params->>'limit')::integer, 10000);
-    IF limit_val > 100000 THEN limit_val := 100000; END IF;
-
-    -- Parse offset parameter
-    offset_val := COALESCE((query_params->>'offset')::integer, 0);
-
-    -- Parse sortby parameter
-    IF (query_params::jsonb) ? 'sortby' THEN
-        DECLARE
-            sortby_val text := query_params->>'sortby';
-        BEGIN
-            IF sortby_val LIKE '-%' THEN
-                order_clause := format(' ORDER BY %I DESC', ltrim(sortby_val, '-'));
-            ELSE
-                order_clause := format(' ORDER BY %I ASC', ltrim(sortby_val, '+'));
-            END IF;
-        END;
-    END IF;
-
-    -- Parse properties parameter (column selection)
-    IF (query_params::jsonb) ? 'properties' THEN
-        FOR key IN SELECT trim(k) FROM unnest(string_to_array(query_params->>'properties', ',')) AS k
-        LOOP
-            IF key IN ({properties_list_quoted}) THEN
-                 properties_clause := properties_clause || ', ' || quote_ident(key);
-            END IF;
-        END LOOP;
-    END IF;
-
-    -- If no valid properties selected, use all allowed properties
-    IF properties_clause = '' THEN
-        properties_clause := ', {properties}';
-    END IF;
-
-    -- Parse property filters
-    FOR key, value IN SELECT * FROM jsonb_each_text(query_params::jsonb)
-    LOOP
-        IF key IN ('limit', 'offset', 'sortby', 'properties') THEN
-            CONTINUE;
-        END IF;
-
-        -- Handle range filters with left() to remove suffix
-        IF key LIKE '%_min' THEN
-            where_clauses := array_append(
-                where_clauses,
-                format('%I >= %L', left(key, -4), value)
-            );
-        ELSIF key LIKE '%_max' THEN
-            where_clauses := array_append(
-                where_clauses,
-                format('%I <= %L', left(key, -4), value)
-            );
-        ELSE
-            where_clauses := array_append(
-                where_clauses,
-                format('%I = %L', key, value)
-            );
-        END IF;
-    END LOOP;
-
-    -- Build WHERE clause
-    DECLARE
-        additional_where text := '';
-    BEGIN
-        IF array_length(where_clauses, 1) > 0 THEN
-            additional_where := ' AND ' || array_to_string(where_clauses, ' AND ');
-        END IF;
-
-        -- Execute dynamic query
-        EXECUTE format($sql$
-            SELECT ST_AsMVT(tile, %L, 4096, 'geom')
-            FROM (
-                SELECT
-                    ST_AsMVTGeom(
-                        ST_Transform(%I, 3857),
-                        ST_TileEnvelope(%s, %s, %s),
-                        4096, 64, true
-                    ) AS geom
-                    %s
-                FROM {schema}.{table}
-                WHERE %I && ST_Transform(ST_TileEnvelope(%s, %s, %s), {srid})
-                %s
-                %s
-                LIMIT %s OFFSET %s
-            ) AS tile
-            WHERE geom IS NOT NULL
-        $sql$,
-            '{table}',
-            '{geom_col}',
-            z, x, y,
-            properties_clause,
-            '{geom_col}',
-            z, x, y,
-            additional_where,
-            order_clause,
-            limit_val,
-            offset_val
-        ) INTO mvt;
-    END;
-
-    RETURN COALESCE(mvt, ''::bytea);
-END;
-$$;"#,
-        schema = schema,
-        function_name = function_name,
-        table = table,
-        geom_col = geom_col,
-        srid = srid,
-        properties = properties_list
+    let sql = generate_filtered_function_sql(
+        schema,
+        table,
+        &function_name,
+        geom_col,
+        srid,
+        &properties_list,
+        &properties_list_quoted,
     );
 
     // Execute the SQL to create the function
-    let client = pool
-        .get()
-        .await
-        .map_err(|e| ConsumerError::Database(e.to_string()))?;
-
     client
         .execute(&sql, &[])
         .await
@@ -700,6 +544,7 @@ $$;"#,
 
     Ok(function_name)
 }
+
 
 async fn refresh_sources(
     service: &Arc<RwLock<MaptileServiceImpl>>,

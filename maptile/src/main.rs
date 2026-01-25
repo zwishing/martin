@@ -8,9 +8,9 @@ use clap::Parser;
 use log::{error, info};
 use tokio::sync::{RwLock, watch};
 
-use maptile::config::{create_config_pool, load_config, start_redis_consumer_task};
+use maptile::config::{create_config_pool, load_config};
 use maptile::handler::MaptileServiceImpl;
-use maptile::infra::start_reload_task;
+use maptile::infra::redis_consumer::start_redis_consumer_task;
 use maptile::volo_gen::maptile::r#gen::MaptileServiceServer;
 
 /// Maptile - High-performance Thrift RPC microservice for vector tiles
@@ -67,17 +67,38 @@ async fn main() -> anyhow::Result<()> {
     if let Some(reload_interval) = config.config.reload_interval_sec {
         let service_clone = Arc::clone(&service_for_reload);
         let config_clone = config.clone();
-        let shutdown_rx_clone = shutdown_rx.clone();
+        let mut shutdown_rx_clone = shutdown_rx.clone();
         let pool_clone = config_pool.clone();
         tokio::spawn(async move {
-            start_reload_task(
-                service_clone,
-                config_clone,
-                reload_interval,
-                shutdown_rx_clone,
-                pool_clone,
-            )
-            .await;
+            use tokio::time::{interval, Duration};
+            
+            let mut interval = interval(Duration::from_secs(reload_interval));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        use log::{info, warn};
+                        use maptile::config::load_sources_from_database;
+                        
+                        info!("Reloading configuration...");
+                        match load_sources_from_database(&config_clone, &pool_clone).await {
+                            Ok(loaded) => {
+                                let mut guard = service_clone.write().await;
+                                guard.update_sources(loaded.sources);
+                                guard.update_metadata(loaded.metadata);
+                                info!("Configuration reloaded successfully");
+                            }
+                            Err(e) => {
+                                warn!("Failed to reload configuration: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = shutdown_rx_clone.changed() => {
+                         if *shutdown_rx_clone.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
         });
     }
 
